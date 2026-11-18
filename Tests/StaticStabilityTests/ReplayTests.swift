@@ -59,7 +59,7 @@ final class ReplayTests: XCTestCase {
 
     func testBreakersCutLoadOnDownDependenciesAndTheGateFlattensRecovery() throws {
         let naive = try pick(Self.apple, .naive), stable = try pick(Self.apple, .staticallyStable)
-        XCTAssertLessThan(stable.requestsToDownDependencies * 4, naive.requestsToDownDependencies)
+        XCTAssertLessThan(stable.requestsToDownDependencies * 3, naive.requestsToDownDependencies, "even with breakers reset on every process kill")
         XCTAssertLessThan(stable.peakSyncRequestsPerMinute * 2, naive.peakSyncRequestsPerMinute)
     }
 
@@ -84,21 +84,21 @@ final class ReplayTests: XCTestCase {
         XCTAssertEqual(naive.requestsToDownDependencies, 233_449)
         XCTAssertEqual(naive.signedOutUserMinutes, 53_901)
         XCTAssertEqual(naive.maxUnsyncedWriteAgeMinutes, 182)
-        XCTAssertEqual(stable.falseGrantUserMinutes, 219)
-        XCTAssertEqual(stable.peakSyncRequestsPerMinute, 336)
-        XCTAssertEqual(stable.requestsToDownDependencies, 35_901)
+        XCTAssertEqual(stable.falseGrantUserMinutes, 205)
+        XCTAssertEqual(stable.peakSyncRequestsPerMinute, 334)
+        XCTAssertEqual(stable.requestsToDownDependencies, 63_944)
     }
 
     func testCompoundGoldenValuesQuotedInTheREADME() throws {
         let naive = try pick(Self.compound, .naive), stable = try pick(Self.compound, .staticallyStable)
         XCTAssertEqual(naive.aiServedFull, 12_239)
         XCTAssertEqual(naive.aiFailed, 4_044)
-        XCTAssertEqual(stable.aiServedFull, 12_140)
-        XCTAssertEqual(stable.aiServedReduced, 2_713)
-        XCTAssertEqual(stable.aiFailed, 1_430)
-        XCTAssertEqual(naive.aiServedFull - stable.aiServedFull, 99)
+        XCTAssertEqual(stable.aiServedFull, 12_196)
+        XCTAssertEqual(stable.aiServedReduced, 2_673)
+        XCTAssertEqual(stable.aiFailed, 1_414)
+        XCTAssertEqual(naive.aiServedFull - stable.aiServedFull, 43)
         XCTAssertEqual(String(format: "%.1f", naive.aiServedPercent), "75.2")
-        XCTAssertEqual(String(format: "%.1f", stable.aiServedPercent), "91.2")
+        XCTAssertEqual(String(format: "%.1f", stable.aiServedPercent), "91.3")
     }
 
     func testWithoutAnOutageTheArchitecturesLookTheSameToUsers() throws {
@@ -128,9 +128,19 @@ final class ReplayTests: XCTestCase {
                                        config: ReplayConfig(recoveryWindowMinutes: 0, pushesPerMinute: 10_000, pushBurst: 10_000))
         XCTAssertGreaterThan(ungated.peakSyncRequestsPerMinute, stable.peakSyncRequestsPerMinute * 2)
         // Golden values quoted in the README's recovery-gate trade-off.
-        XCTAssertEqual(ungated.peakSyncRequestsPerMinute, 690)
-        XCTAssertEqual(ungated.maxUnsyncedWriteAgeMinutes, 206)
-        XCTAssertEqual(stable.maxUnsyncedWriteAgeMinutes, 225)
+        XCTAssertEqual(ungated.peakSyncRequestsPerMinute, 1_007)
+        XCTAssertEqual(ungated.maxUnsyncedWriteAgeMinutes, 205)
+        XCTAssertEqual(stable.maxUnsyncedWriteAgeMinutes, 217)
+    }
+
+    func testPersistedBreakerStateIsTheOptimisticVariant() {
+        // README: an app that persisted breakers and the recovery slot across kills
+        // would send 35,901 requests to down services instead of 63,944.
+        let persisted = OutageReplay.run(.apple17Nov2026, architecture: .staticallyStable,
+                                         config: ReplayConfig(breakerStateSurvivesKills: true))
+        XCTAssertEqual(persisted.requestsToDownDependencies, 35_901)
+        XCTAssertEqual(persisted.signedOutUserMinutes, 0)
+        XCTAssertEqual(persisted.lockedOutPayingUserMinutes, 0)
     }
 
     func testNaiveOldestWriteWithoutProcessKills() {
@@ -172,6 +182,9 @@ final class ReplayTests: XCTestCase {
         XCTAssertTrue(OutageScenario.compound.isUp(.remoteConfig, atMinute: 180))
         XCTAssertTrue(OutageScenario.apple17Nov2026.isUp(.remoteConfig, atMinute: 100))
         XCTAssertEqual(scenario.lastRecoveryMinute, 210)
+        let many = OutageScenario(id: "many", title: "", summary: "", durationMinutes: 10,
+                                  windows: Array(repeating: OutageWindow(dependency: .identity, startMinute: 0, endMinute: 1), count: 500))
+        XCTAssertEqual(many.windows.count, 100, "windows are capped so a hostile scenario stays bounded")
         let inverted = OutageWindow(dependency: .identity, startMinute: 50, endMinute: 10)
         XCTAssertEqual(inverted.endMinute, 50, "an inverted window is empty, not negative")
         XCTAssertEqual(ReplayReport.percent(5, of: 0), 100)

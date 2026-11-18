@@ -44,6 +44,10 @@ public enum OfferOutcome: Sendable, Equatable {
 
 /// Remote config with a last-known-good fallback and a compiled-in default.
 ///
+/// It refuses any value stamped earlier than the one it holds, so if one fetch is
+/// stamped while the device clock is set forward, later fetches are rejected as
+/// out of order until real time catches up. Stamp `fetchedAt` with server time.
+///
 /// Static stability for config means: the app's behaviour during an outage is the
 /// behaviour it had just before the outage, not a behaviour it falls into because a
 /// fetch failed. The type only ever moves forward to a newer, validated value.

@@ -26,7 +26,8 @@ public struct OutageScenario: Sendable, Equatable, Identifiable {
         // One day at most: a replay allocates per-minute arrays and steps every client
         // every minute, so the bounds keep a hostile scenario from exhausting memory.
         self.durationMinutes = min(max(durationMinutes, 1), 24 * 60)
-        self.windows = windows
+        // At most 100 windows: `isUp` scans them for every client every minute.
+        self.windows = Array(windows.prefix(100))
     }
 
     public func isUp(_ dependency: Dependency, atMinute minute: Int) -> Bool {
@@ -118,6 +119,11 @@ public struct ReplayConfig: Sendable, Equatable {
     public let outageGraceMillis: Int64
     public let maxUnverifiedSessionMillis: Int64
     public let breakerPolicy: BreakerPolicy
+    /// Whether the statically stable client's breakers and recovery slot survive a
+    /// process kill. `true` models an app that persists them; `false` models one
+    /// that keeps them in memory, so every relaunch starts with closed breakers and
+    /// no recovery slot. The outbox, session and last refresh time persist either way.
+    public let breakerStateSurvivesKills: Bool
 
     public init(
         clients: Int = 1_000,
@@ -142,9 +148,11 @@ public struct ReplayConfig: Sendable, Equatable {
             maxCooldownMillis: Millis.minutes(16),
             cooldownJitterMillis: Millis.minutes(4),
             halfOpenSuccessesToClose: 2
-        )
+        ),
+        breakerStateSurvivesKills: Bool = false
     ) {
         func percent(_ value: Int) -> Int { min(max(value, 0), 100) }
+        self.breakerStateSurvivesKills = breakerStateSurvivesKills
         // 5,000 clients × 1,440 minutes is the largest replay: bounded in time and
         // memory even for the naive design's unbounded per-client queue.
         self.clients = min(max(clients, 1), 5_000)
@@ -310,6 +318,12 @@ private struct Client {
             maxUnverifiedMillis: config.maxUnverifiedSessionMillis,
             lastVerifiedAt: Instant.minute(-rng.below(24 * 60))
         )
+        breakers = Self.freshBreakers(installationID: installationID, config: config)
+        gate = Self.freshGate(installationID: installationID, config: config, at: .minute(0))
+        self.rng = rng
+    }
+
+    static func freshBreakers(installationID: String, config: ReplayConfig) -> [Dependency: CircuitBreaker] {
         let idHash = StableHash.fnv1a64(installationID)
         var breakers: [Dependency: CircuitBreaker] = [:]
         for (offset, dependency) in Dependency.allCases.enumerated() {
@@ -318,18 +332,20 @@ private struct Client {
                 jitterSeed: StableHash.mix(idHash, UInt64(offset))
             )
         }
-        self.breakers = breakers
-        gate = RecoveryGate(
+        return breakers
+    }
+
+    static func freshGate(installationID: String, config: ReplayConfig, at now: Instant) -> RecoveryGate {
+        RecoveryGate(
             installationID: installationID,
             jitter: RecoveryJitter(windowMillis: Millis.minutes(Int64(config.recoveryWindowMinutes))),
             bucket: TokenBucket(
                 capacity: Int64(config.pushBurst),
                 refillPerMinute: Int64(config.pushesPerMinute),
                 tokens: Int64(config.pushBurst),
-                at: .minute(0)
+                at: now
             )
         )
-        self.rng = rng
     }
 
     func trulyEntitled(at now: Instant) -> Bool {
@@ -380,6 +396,11 @@ private struct Client {
         if killed, architecture == .naive, !pending.isEmpty {
             report.writesLost = Saturating.add(report.writesLost, pending.count)
             pending.removeAll()
+        }
+        // Breakers and the recovery slot survive only if the app persists them.
+        if killed, architecture == .staticallyStable, !config.breakerStateSurvivesKills {
+            breakers = Self.freshBreakers(installationID: installationID, config: config)
+            gate = Self.freshGate(installationID: installationID, config: config, at: now)
         }
     }
 

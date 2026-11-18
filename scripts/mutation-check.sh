@@ -46,6 +46,9 @@ MUTANTS=(
   "$S/DurableOutbox.swift|            entries = before|            _ = before|a failed save rolls the enqueue back"
   "$S/DurableOutbox.swift|guard entries.count < capacity else { return .rejectedFull }|_ = capacity|the outbox is bounded"
   "$S/DurableOutbox.swift|            guard !Task.isCancelled else {|            guard true else {|a cancelled task stops the drain"
+  "$S/DurableOutbox.swift|                if case .transientFailure = outcome {
+                    report.transientFailures += 1|                if case .transientFailure = outcome, false {
+                    report.transientFailures += 1|a transient failure stops the drain even if its entry was reset mid-push"
   "$S/DurableOutbox.swift|                stop = true|                stop = false|a transient failure stops the drain"
   "$S/DurableOutbox.swift|                    parked.insert(sent.recordKey)
                     report.rebasedAfterConflict += 1|                    report.rebasedAfterConflict += 1|an always-conflicting server cannot spin the drain"
@@ -55,6 +58,7 @@ MUTANTS=(
   "$S/RecoveryGate.swift|(1...10_000).contains(buckets)|buckets > 0|a hostile bucket count cannot exhaust memory"
   "$S/RecoveryGate.swift|            guard now >= slot else { return false }|            _ = slot|a client waits for its jittered slot"
   "$S/RecoveryGate.swift|        guard now > lastRefill else { return }|        guard now != lastRefill else { return }|a clock moved backwards earns no tokens"
+  "$S/OutageReplay.swift|if killed, architecture == .staticallyStable, !config.breakerStateSurvivesKills {|if false, killed, architecture == .staticallyStable, !config.breakerStateSurvivesKills {|the replay resets a killed stable client's breakers and recovery slot"
   '$S/CapabilityRouter.swift|let lost = task.preferred.subtracting(chosen.capabilities).sorted()|let lost: [AICapability] = []|a fallback route says what it lost'
   '$S/CapabilityRouter.swift|guard let chosen = live.first(where: { task.required.isSubset(of: $0.capabilities) }) else {|guard let chosen = live.first else {|a task is never routed to a model that lacks a required capability'
   "$S/Time.swift|        highWater = trusted|        _ = trusted|reanchor recovers from a clock set forward and back"

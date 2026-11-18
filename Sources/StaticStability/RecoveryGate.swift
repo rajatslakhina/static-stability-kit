@@ -4,8 +4,10 @@
 /// wants to sync at once. If they all notice within the same minute, the recovered
 /// service takes a spike of the whole fleet's backlog and can fall over again. Each
 /// client instead waits a delay derived from its installation ID and the recovery
-/// epoch: stable across relaunches (so killing the app does not reroll the dice),
-/// different per recovery (so the same device is not always last).
+/// epoch: a pure function, so it is the same on every launch for the same epoch,
+/// and different per epoch (so the same device is not always last). The slot itself
+/// (``RecoveryGate/notBefore``) lives in memory; a relaunch forgets it unless the app
+/// persists the recovery time and epoch.
 public struct RecoveryJitter: Sendable, Equatable {
     public let windowMillis: Int64
 

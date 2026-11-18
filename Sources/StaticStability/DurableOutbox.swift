@@ -373,7 +373,16 @@ public actor DurableOutbox {
             budget -= 1
             let outcome = await transport.push(sent)
             // Suspension point above: re-locate the entry, it may have changed.
-            guard let index = entries.firstIndex(where: { $0.recordKey == sent.recordKey }) else { continue }
+            guard let index = entries.firstIndex(where: { $0.recordKey == sent.recordKey }) else {
+                // The entry was discarded mid-push (resetDiscardingPendingWrites). A
+                // transient failure still means the dependency is struggling: stop.
+                if case .transientFailure = outcome {
+                    report.transientFailures += 1
+                    report.status = .stoppedOnTransientFailure
+                    break
+                }
+                continue
+            }
             let unchanged = entries[index].writeID == sent.writeID
             var stop = false
             switch outcome {

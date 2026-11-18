@@ -51,14 +51,35 @@ private final class ReentrantTransport: SyncTransport, @unchecked Sendable {
     }
 }
 
-/// Resets the outbox while its push is in flight.
+/// Resets the outbox while its push is in flight, optionally queues another record,
+/// then answers with `outcome`.
 private final class ResettingTransport: SyncTransport, @unchecked Sendable {
-    // @unchecked: `outbox` is set once before any push and never mutated after.
+    // @unchecked: `outbox`, `outcome` and `enqueueAfterReset` are set before any push and
+    // never mutated after; `calls` is only touched under `lock`.
     var outbox: DurableOutbox?
+    var outcome: PushOutcome = .accepted(newVersion: 1)
+    var enqueueAfterReset = false
+    private let lock = NSLock()
+    private var calls = 0
 
     func push(_ entry: OutboxEntry) async -> PushOutcome {
+        guard nextCall() == 1 else { return outcome }
         try? await outbox?.resetDiscardingPendingWrites()
-        return .accepted(newVersion: 1)
+        if enqueueAfterReset {
+            _ = try? await outbox?.enqueue(recordKey: "b", payload: Data("b".utf8), baseVersion: 0, at: .minute(2))
+        }
+        return outcome
+    }
+
+    private func nextCall() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        calls += 1
+        return calls
+    }
+
+    var pushCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return calls
     }
 }
 
@@ -302,6 +323,20 @@ final class DurableOutboxTests: XCTestCase {
         XCTAssertEqual(report.remaining, 0)
         let pending = await outbox.pending
         XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testTransientFailureOnAnEntryResetMidPushStillStopsTheDrain() async throws {
+        let outbox = makeOutbox()
+        _ = try await outbox.enqueue(recordKey: "a", payload: bytes("1"), baseVersion: 0, at: .minute(1))
+        let transport = ResettingTransport()
+        transport.outbox = outbox
+        transport.outcome = .transientFailure
+        transport.enqueueAfterReset = true
+        let report = await outbox.drain(via: transport, maxPushes: 5)
+        XCTAssertEqual(report.status, .stoppedOnTransientFailure)
+        XCTAssertEqual(report.transientFailures, 1)
+        XCTAssertEqual(transport.pushCount, 1, "record b is not pushed at a dependency that just failed")
+        XCTAssertEqual(report.remaining, 1)
     }
 
     func testCancelledTaskStopsTheDrainBeforeSending() async throws {
