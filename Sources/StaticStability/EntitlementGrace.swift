@@ -11,6 +11,10 @@ public struct VerifiedEntitlement: Sendable, Codable, Equatable {
     public let expiresAt: Instant?
     /// Set when the store reported a refund or revocation.
     public let revokedAt: Instant?
+    /// When the app last refreshed this entitlement from the store successfully
+    /// (not when the purchase was first verified). Update it on every successful
+    /// refresh, including one that returns the same transaction: it is how the
+    /// policy tells a renewal it has not seen yet from a lapse it has already seen.
     public let verifiedAt: Instant
 
     public init(productID: String, expiresAt: Instant?, revokedAt: Instant? = nil, verifiedAt: Instant) {
@@ -48,11 +52,16 @@ public enum EntitlementDecision: Sendable, Equatable {
 /// Decides access from locally verified transactions, with a bounded grace window
 /// that applies only while the store is unreachable.
 ///
-/// The trade-off is explicit: during an outage, a subscriber who really did cancel
-/// keeps access for up to `outageGraceMillis` past expiry. The alternative is that
-/// every subscriber whose renewal falls inside the outage is locked out of
-/// something they paid for. The replay reports both numbers so the cost of the
-/// grace is visible, not hidden.
+/// The trade-off is explicit: during an outage, a subscriber who really did cancel,
+/// and whose expiry the app has not yet confirmed with the store, keeps access for
+/// up to `outageGraceMillis` past expiry. The alternative is that every subscriber
+/// whose renewal falls inside the outage is locked out of something they paid for.
+/// The replay reports both numbers so the cost of the grace is visible, not hidden.
+///
+/// Grace never re-grants a lapse the app has already seen: if a successful refresh
+/// happened at or after the expiry (`verifiedAt >= expiresAt`) and still showed that
+/// expiry, the subscription really ended, so going offline or blocking the store's
+/// hosts afterwards does not bring access back.
 public struct EntitlementPolicy: Sendable, Equatable {
     public let outageGraceMillis: Int64
 
@@ -75,6 +84,8 @@ public struct EntitlementPolicy: Sendable, Equatable {
         guard let expiry = entitlement.expiresAt else { return .granted(.verified) }
         if now < expiry { return .granted(.verified) }
         guard !storeReachable else { return .denied(.expired) }
+        // A refresh at or after the expiry already confirmed the lapse.
+        guard entitlement.verifiedAt < expiry else { return .denied(.expired) }
         let graceEnd = expiry.advanced(byMillis: outageGraceMillis)
         guard now < graceEnd else { return .denied(.expired) }
         return .granted(.outageGrace(remainingMillis: graceEnd.millis(since: now)))

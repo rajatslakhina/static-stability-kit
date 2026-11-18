@@ -50,15 +50,18 @@ public struct OutageScenario: Sendable, Equatable, Identifiable {
         ]
     )
 
-    /// The same outage with the cloud AI provider also failing for 90 minutes in the
-    /// middle of it, so the AI fallback path is exercised too.
+    /// The same outage with the cloud AI provider failing for 90 minutes and the
+    /// remote-config service for 2 hours inside it, so the AI fallback and the
+    /// last-known-good config paths are exercised too. (The replay's metrics do not
+    /// model config; the demo's posture screen shows it.)
     public static let compound = OutageScenario(
         id: "compound",
-        title: "Apple + cloud AI",
-        summary: "The Apple outage, plus the cloud AI provider down for 90 minutes inside it.",
+        title: "Compound",
+        summary: "The Apple outage, plus cloud AI down for 90 minutes and remote config down for 2 hours inside it.",
         durationMinutes: 360,
         windows: apple17Nov2026.windows + [
             OutageWindow(dependency: .cloudAI, startMinute: 60, endMinute: 150),
+            OutageWindow(dependency: .remoteConfig, startMinute: 60, endMinute: 180),
         ]
     )
 
@@ -278,6 +281,8 @@ private struct Client {
     let originalExpiry: Instant
     /// What the device has verified so far.
     var verifiedExpiry: Instant
+    /// Last successful refresh from the store (the entitlement's `verifiedAt`).
+    var lastRefresh: Instant
     // Naive state
     var naiveSignedIn = true
     // Statically stable state
@@ -294,6 +299,7 @@ private struct Client {
         let expiry = Instant.minute(rng.below(config.renewalSpreadMinutes))
         originalExpiry = expiry
         verifiedExpiry = expiry
+        lastRefresh = .minute(-1)
         session = SessionContinuity(
             maxUnverifiedMillis: config.maxUnverifiedSessionMillis,
             lastVerifiedAt: Instant.minute(-rng.below(24 * 60))
@@ -416,6 +422,7 @@ private struct Client {
     }
 
     private mutating func refreshTransactions(at now: Instant) {
+        lastRefresh = now
         // The store renews every subscriber who did not cancel; a refresh that
         // reaches it sees the renewal.
         guard !cancelled else { return }
@@ -440,7 +447,8 @@ private struct Client {
             // expiry it confirms is real. A refused or failed refresh is unreachable.
             let reachable = result?.succeeded == true
             if reachable { refreshTransactions(at: now) }
-            let entitlement = VerifiedEntitlement(productID: "pro.monthly", expiresAt: verifiedExpiry, verifiedAt: now)
+            let entitlement = VerifiedEntitlement(productID: "pro.monthly", expiresAt: verifiedExpiry,
+                                                  verifiedAt: lastRefresh)
             granted = policy.decide(entitlement, storeReachable: reachable, at: now).isGranted
         }
         if trulyEntitled(at: now) {

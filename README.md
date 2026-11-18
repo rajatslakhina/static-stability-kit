@@ -13,7 +13,7 @@ This package is the client-side resilience layer that stops those things from ha
 | Writes lost | 7,935 of 21,626 (36.7%) | **0** |
 | Requests sent to services that were down | 233,449 | **35,901** (−84.6%) |
 | Peak sync requests per minute | 1,042 | **336** (3.1× lower) |
-| *Cost:* cancelled users still granted access (user-minutes) | 0 | 266 |
+| *Cost:* cancelled users still granted access (user-minutes) | 0 | 219 |
 | *Cost:* oldest unsynced write (minutes) | 182 | 225 |
 
 The last two rows are the price of the design, and the replay reports them on purpose. The [demo app](#demo-app) shows the table, the recovery-traffic chart and a minute-by-minute view of what one user sees.
@@ -50,8 +50,8 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 | Type | Problem it solves |
 |---|---|
 | `CircuitBreaker`, `BreakerPolicy` | Stops sending requests to a dependency that is down. It trips on a failure *rate* over a window, with a minimum sample count, so one bad request is noise rather than an outage. The cooldown is exponential and jittered per client, and half-open lets exactly one probe through at a time. |
-| `SessionContinuity` | Tells "the provider said no" (`.revoked`, `.notFound`: sign out) apart from "the provider did not answer" (carry on). After a 7-day unverified budget the session becomes `.restricted` (read-only, sensitive actions paused), never signed out. |
-| `EntitlementPolicy`, `VerifiedEntitlement` | Grants access from locally verified transactions. Past expiry, it grants a bounded grace (48 h by default) only while the store is unreachable. A refund or revocation always wins. |
+| `SessionContinuity` | Tells "the provider said no" (`.revoked`, `.notFound`: sign out) apart from "the provider did not answer" (carry on). After a 7-day unverified budget the session becomes `.restricted`: the user keeps their data and sensitive actions are paused (the app enforces which). It is never signed out. |
+| `EntitlementPolicy`, `VerifiedEntitlement` | Grants access from locally verified transactions. Past expiry, it grants a bounded grace (48 h by default) only while the store is unreachable, and only if no successful refresh has already confirmed the lapse, so going offline after a cancellation doesn't bring access back. A refund or revocation always wins. |
 | `MonotonicTimeGuard` | Stops the user stretching the grace or the session budget by setting the device clock back. |
 | `DurableOutbox` (actor) | A bounded, coalescing, persisted queue for writes made while sync is down. It applies backpressure (`.rejectedFull`) instead of dropping writes, runs one drain at a time, and is safe under actor reentrancy (see below). It loads the persisted queue before its first write or drain, so a write made at launch cannot overwrite it on disk. Conflicts go to a pluggable `ConflictResolver` (`LastWriterWins` included). |
 | `RecoveryJitter`, `TokenBucket`, `RecoveryGate` | Herd control at recovery. Each install gets a deterministic slot in a 30-minute window from a stable hash of its installation ID and the recovery epoch, then sends through a token bucket that keeps fractional refill. |
@@ -68,11 +68,11 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 
 **The cooldown jitter is per client and deterministic.** Without it, every client that tripped in the same minute probes in the same minute, and the probes become their own herd. The jitter comes from FNV-1a and SplitMix64, not from Swift's `Hasher`, which is seeded per process and so would reshuffle every client on each relaunch.
 
-**The entitlement grace is bounded and applies only while the store is unreachable.** *Rejected:* no grace, which locked paying users out for 3,179 user-minutes in the replay. *Also rejected:* unlimited grace, which turns any outage (or a user blocking the store's hosts) into free access forever. 48 hours covers the outages we have seen. The cost shows up as `falseGrantUserMinutes` (266 in the replay), which is the number a product owner should sign off on.
+**The entitlement grace is bounded, applies only while the store is unreachable, and never re-grants a lapse the app has already seen.** `VerifiedEntitlement.verifiedAt` is the last successful refresh. If that refresh happened at or after the expiry and still showed the expiry, the subscription really ended, and an outage (or the user blocking the store's hosts) does not bring access back. *Rejected:* no grace, which locked paying users out for 3,179 user-minutes in the replay. *Also rejected:* unlimited grace, which turns any outage into free access forever. 48 hours is a product choice, comfortably longer than the multi-hour outage this replays, and `outageGraceMillis` is there to tune it. The cost shows up as `falseGrantUserMinutes` (219 in the replay: cancelled users whose expiry fell before the app could confirm it), which is the number a product owner should sign off on.
 
-**Over budget, a session is restricted rather than signed out.** Signing someone out during an outage they can't sign back in through destroys their local state for nothing. Restricted mode keeps their data readable and pauses only the actions that really need a fresh identity.
+**Over budget, a session is restricted rather than signed out.** Signing someone out during an outage they can't sign back in through destroys their local state for nothing. Restricted mode keeps their data available and pauses only the actions that really need a fresh identity. Deciding which actions those are, and blocking them, is the app's job.
 
-**The outbox persists synchronously inside the actor.** `enqueue` returns `.accepted` only after the store has saved, and it never suspends between changing state and saving, so two interleaved enqueues cannot save their snapshots out of order. *Trade-off:* a slow disk blocks the actor for one small write. That is acceptable for a queue bounded at a few hundred entries. *Rejected:* an `async` store, which reintroduces the ordering problem and needs a generation counter to fix it.
+**The outbox persists synchronously inside the actor.** `enqueue` returns `.accepted` only after the store has saved (for `FileOutboxStore`, an atomic write-and-rename: it survives an app crash, but without an explicit fsync it is not guaranteed through a power loss), and it never suspends between changing state and saving, so two interleaved enqueues cannot save their snapshots out of order. *Trade-off:* a slow disk blocks the actor for one small write. That is acceptable for a queue bounded at a few hundred entries. *Rejected:* an `async` store, which reintroduces the ordering problem and needs a generation counter to fix it.
 
 **Actor reentrancy is handled by write identity, not by locking.** The drain suspends at `await transport.push`. While it is suspended, a newer edit to the same record can coalesce into the pending entry, and then the push of the *old* content succeeds. Removing the entry by record key at that point silently drops the user's latest edit. Every coalesce assigns a fresh `writeID`, and after resuming, the drain removes the entry only if the ID is unchanged. Otherwise it rebases the newer write onto the version just created. `testWriteDuringInFlightPushIsNotLost` reproduces the interleaving through a transport that re-enters the outbox mid-push.
 
@@ -85,8 +85,8 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors (Swift 6.4.2, Xcode 27.2, Swift 6 language mode).
-- `swift test`: **95 XCTest tests, 0 failures** on macOS. The suite covers trapping-arithmetic edges (`Int64.max` instants, `.max` grace, hostile breaker and replay config), empty and boundary states, breaker cooldown sequences, clock rollback, the outbox reentrancy interleaving, concurrent drains, save-failure rollback, dead-letter bounds, token-bucket remainder carry, jitter uniformity, and replay invariants (every write accounted for, identical workloads, golden values recorded from an earlier process).
-- **Tests that would fail against a broken implementation.** `scripts/mutation-check.sh` re-introduces 30 specific bugs, one per claim in this README (single-error tripping, removing the reentrancy check, discarding the token-bucket remainder, a constant jitter, and so on), and requires each one to fail the suite. The uniformity check is itself tested against a constant spread and a half-window spread, both of which it must reject. Result: **30/30 caught**.
+- `swift test`: **102 XCTest tests, 0 failures** on macOS. The suite covers trapping-arithmetic edges (`Int64.max` instants, `.max` grace, hostile breaker and replay config), empty and boundary states, breaker cooldown sequences, clock rollback, the outbox reentrancy interleaving (on the success, conflict, transient and permanent-failure paths), concurrent drains, re-grant prevention, save-failure rollback, dead-letter bounds, token-bucket remainder carry, jitter uniformity, and replay invariants (every write accounted for, identical workloads, golden values recorded from an earlier process).
+- **Tests that would fail against a broken implementation.** `scripts/mutation-check.sh` re-introduces 33 specific bugs, one per claim in this README (single-error tripping, removing the reentrancy check, discarding the token-bucket remainder, a constant jitter, and so on), and requires each one to fail the suite. The uniformity check is itself tested against a constant spread and a half-window spread, both of which it must reject. Result: **33/33 caught**.
 - CI ([Actions](https://github.com/rajatslakhina/static-stability-kit/actions)): a Linux job (`swift:6.0`, warnings as errors, full test suite), a macOS job (tests plus a generic iOS Simulator build of the library), and the mutation check.
 
 ## Honest limits
@@ -94,8 +94,13 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 - **No Apple framework code.** The package does not import StoreKit, AuthenticationServices or CloudKit. `VerifiedEntitlement` must be built from a `VerificationResult.verified` transaction, which is where the JWS signature check happens. `CredentialCheckResult` maps from `getCredentialState`, and `SyncTransport` wraps your CloudKit or API calls. That keeps the policies testable on Linux, but the adapters are yours to write.
 - **The replay is a model, not a measurement.** A dependency is either up or down in a given minute. There is no latency, partial failure or server capacity. The outage's three-hour length and simultaneous start are illustrative. Renewals are concentrated into a 24-hour band so a 3-hour outage visibly affects a 1,000-client run: with real monthly renewals, about 0.4% of subscribers renew during a 3-hour outage, which is still tens of thousands of people for a large app. The sync queue in the replay is a list of enqueue times per client. The real `DurableOutbox` (persistence, coalescing, reentrancy) is covered by its own tests, not by the replay.
 - **The naive baseline is a composite.** It is one common policy per dependency, not a model of any particular app. It also understates naive harm in one way: it signs the user straight back in when identity returns, with no re-login friction.
-- **The compound scenario shows one small regression.** With the cloud AI provider down for 90 minutes, the stable design answers 91.2% of AI requests against the naive 75.2%. But the cloud's breaker is still cooling down for a few minutes after the provider recovers, so 99 requests that the cloud could have answered went on-device or failed instead. That is the price of probing rather than hammering.
+- **The compound scenario shows one small regression.** With the cloud AI provider down for 90 minutes (remote config is also down for 2 hours in that scenario, which the replay's metrics do not model; the demo's posture screen shows the last-known-good fallback), the stable design answers 91.2% of AI requests against the naive 75.2%. But the cloud's breaker is still cooling down for a few minutes after the provider recovers, so 99 requests that the cloud could have answered went on-device or failed instead. That is the price of probing rather than hammering.
 - **Dead letters are kept in memory only**, up to `deadLetterCapacity`. `FileOutboxStore` rewrites the whole JSON file on every change, which suits a bounded queue but not a large one.
+- **`capacity` bounds the number of records, not bytes.** Payload size is not limited; cap it in your own model if that matters.
+- **Outbox payloads are stored as plain JSON.** On iOS the file gets `completeUntilFirstUserAuthentication` data protection, and nothing more. Encrypt sensitive payloads before enqueueing.
+- **An undecodable persisted queue blocks the outbox.** `drain` reports `.restoreFailed` and `enqueue` throws until the app calls `resetDiscardingPendingWrites()`, which deliberately drops the queued writes. There is no partial recovery.
+- **Revocation is invisible while the identity provider is unreachable.** A revoked Apple ID stays `.activeUnverified` for the 7-day budget and then `.restricted` (data still available) until a check gets through, including when the user blocks the provider. Gate truly sensitive actions on a server-side token check as well.
+- **Grace can't confirm a lapse the app never saw.** A cancelled user who doesn't open the app between their expiry and the outage gets the grace, because nothing distinguishes them from a renewing user. Those minutes are what `falseGrantUserMinutes` counts.
 - **`MonotonicTimeGuard` only defends against the clock moving backwards.** A fresh install has no high-water mark, and a clock moved forward and then back errs towards ending grace early.
 - **Breakers live per process.** An app and its extensions each keep their own. Nothing here coordinates across processes or devices.
 - **The on-device capability set (`InferenceBackend.onDevice`) is an assumption** and a product decision, not a measurement of any model.
@@ -103,7 +108,7 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 ## Install
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.0.0")
+.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.1.0")
 ```
 
 ```swift
@@ -128,7 +133,7 @@ Persist `MonotonicTimeGuard`, `SessionContinuity.lastVerifiedAt` and the outbox 
 
 ## Demo app
 
-Demo app: (added after the companion repo is pushed — see below)
+Demo app: the link and screenshots are added here once the companion demo repo is published.
 
 ## License
 

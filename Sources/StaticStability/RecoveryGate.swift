@@ -98,10 +98,13 @@ public struct RecoveryGate: Sendable, Equatable {
 
 extension RecoveryJitter {
     /// Whether `delays` fill `windowMillis` roughly evenly: the window is split into
-    /// `buckets` slices and every slice must hold within `tolerancePercent` of the mean.
+    /// `buckets` slices (1...10_000; anything else returns `false`) and every slice
+    /// must hold within `tolerancePercent` of the mean.
     /// Public so an app can check its own fleet's spread in a test.
     public static func isRoughlyUniform(delays: [Int64], windowMillis: Int64, buckets: Int, tolerancePercent: Int) -> Bool {
-        guard windowMillis > 0, buckets > 0, !delays.isEmpty else { return false }
+        // `buckets` sizes an allocation, so it is capped: a hostile value cannot
+        // exhaust memory or trap.
+        guard windowMillis > 0, (1...10_000).contains(buckets), !delays.isEmpty else { return false }
         var counts = [Int](repeating: 0, count: buckets)
         for delay in delays {
             guard delay >= 0, delay < windowMillis else { return false }

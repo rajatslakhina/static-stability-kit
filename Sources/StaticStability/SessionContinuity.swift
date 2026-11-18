@@ -15,10 +15,10 @@ public enum SessionDecision: Sendable, Equatable {
     case active(verifiedAgoMillis: Int64)
     /// The provider is unreachable. The session continues on the app's own token.
     case activeUnverified(unverifiedForMillis: Int64)
-    /// Unverified for longer than the policy allows. The user keeps their data and
-    /// read access but sensitive actions (purchases, account changes, exporting
-    /// data) are blocked until verification succeeds. They are never signed out
-    /// because a provider was down.
+    /// Unverified for longer than the policy allows. The user keeps their data, but
+    /// sensitive actions (purchases, account changes, exporting data) should be
+    /// blocked until verification succeeds; enforcing that is the app's job. They
+    /// are never signed out because a provider was down.
     case restricted(unverifiedForMillis: Int64)
     case signedOut(SignOutReason)
 

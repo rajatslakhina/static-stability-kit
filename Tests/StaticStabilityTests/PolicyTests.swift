@@ -58,7 +58,8 @@ final class SessionContinuityTests: XCTestCase {
     func testProviderOutageNeverSignsOutWithinBudget() {
         var session = SessionContinuity(maxUnverifiedMillis: Millis.days(7), lastVerifiedAt: .minute(0))
         XCTAssertEqual(session.evaluate(.unavailable, at: .minute(180)), .activeUnverified(unverifiedForMillis: Millis.minutes(180)))
-        XCTAssertTrue(session.evaluate(.unavailable, at: .minute(7 * 24 * 60)).hasSession)
+        XCTAssertEqual(session.evaluate(.unavailable, at: .minute(7 * 24 * 60)),
+                       .activeUnverified(unverifiedForMillis: Millis.days(7)), "the boundary itself is inside the budget")
     }
 
     func testOverBudgetIsRestrictedNotSignedOut() {
@@ -132,6 +133,18 @@ final class EntitlementPolicyTests: XCTestCase {
         XCTAssertEqual(policy.decide(monthly(expiresAtMinute: 100), storeReachable: false, at: .minute(graceEnd)), .denied(.expired))
     }
 
+    func testGraceDoesNotReGrantALapseAlreadyConfirmedWithTheStore() {
+        // Expired at minute 100; a successful refresh at minute 110 still showed that
+        // expiry, so the subscription really ended. A later outage (or the user
+        // blocking the store) must not bring access back.
+        let confirmedLapse = VerifiedEntitlement(productID: "pro.monthly", expiresAt: .minute(100), verifiedAt: .minute(110))
+        XCTAssertEqual(policy.decide(confirmedLapse, storeReachable: false, at: .minute(120)), .denied(.expired))
+        let exactlyAtExpiry = VerifiedEntitlement(productID: "pro.monthly", expiresAt: .minute(100), verifiedAt: .minute(100))
+        XCTAssertEqual(policy.decide(exactlyAtExpiry, storeReachable: false, at: .minute(120)), .denied(.expired))
+        let unconfirmed = VerifiedEntitlement(productID: "pro.monthly", expiresAt: .minute(100), verifiedAt: .minute(99))
+        XCTAssertTrue(policy.decide(unconfirmed, storeReachable: false, at: .minute(120)).isGranted)
+    }
+
     func testRevocationWinsOverGrace() {
         let refunded = monthly(expiresAtMinute: 100, revokedAtMinute: 50)
         XCTAssertEqual(policy.decide(refunded, storeReachable: false, at: .minute(60)), .denied(.revoked))
@@ -181,15 +194,29 @@ final class CapabilityRouterTests: XCTestCase {
         XCTAssertEqual(router.route(classify, isAvailable: { $0 != .cloud }), .full(backend: InferenceBackend.onDevice.name))
     }
 
+    func testCapabilitiesSplitAcrossModelsGetAMeaningfulNotice() {
+        let split = CapabilityRouter(backends: [
+            InferenceBackend(name: "A", capabilities: [.extraction]),
+            InferenceBackend(name: "B", capabilities: [.webGrounding]),
+        ])
+        let task = AITask(name: "Cite", required: [.extraction, .webGrounding])
+        guard case .unavailable(let missing, let notice) = split.route(task, isAvailable: { _ in true }) else { return XCTFail() }
+        XCTAssertEqual(missing, [])
+        XCTAssertEqual(notice, "Cite needs extraction, web grounding together, and no single available model provides all of them.")
+        let empty = AITask(name: "Noop", required: [])
+        guard case .unavailable(_, let none) = router.route(empty, isAvailable: { _ in false }) else { return XCTFail() }
+        XCTAssertEqual(none, "Noop has no model available right now.")
+    }
+
     func testNothingAvailableListsEveryRequiredCapability() {
         let task = AITask(name: "Both", required: [.extraction, .webGrounding])
         guard case .unavailable(let missing, _) = router.route(task, isAvailable: { _ in false }) else { return XCTFail() }
         XCTAssertEqual(missing, [.extraction, .webGrounding])
     }
 
-    func testPreferredOverlappingRequiredIsIgnored() {
-        let task = AITask(name: "T", required: [.shortRewrite], preferred: [.shortRewrite])
-        XCTAssertTrue(task.preferred.isEmpty)
+    func testPreferredOverlappingRequiredIsNotReportedAsLost() {
+        let task = AITask(name: "T", required: [.shortRewrite], preferred: [.shortRewrite, .toolUse])
+        XCTAssertEqual(task.preferred, [.toolUse])
     }
 }
 
@@ -241,8 +268,18 @@ final class DegradationPlannerTests: XCTestCase {
         let modes = posture.map(\.mode)
         XCTAssertEqual(modes[0], .unavailable("Signed out: Apple ID access was revoked."))
         XCTAssertEqual(modes[1], .unavailable("Subscription expired."))
-        XCTAssertEqual(modes[2], .degraded("Sync queue full: new items stay on this device until iCloud returns."))
+        XCTAssertEqual(modes[2], .degraded("Sync queue full: catching up, new items wait until it drains."))
         XCTAssertEqual(modes[4], .unavailable("no web"))
+    }
+
+    func testFullQueueWhileSyncIsDownSaysItCannotQueue() {
+        let posture = DegradationPlanner.posture(inputs(pending: 10, capacity: 10, syncAvailable: false))
+        XCTAssertEqual(posture[2].mode, .degraded("Sync queue full: new items can't be queued until iCloud returns."))
+    }
+
+    func testRestrictedSessionWording() {
+        XCTAssertEqual(DegradationPlanner.sessionMode(.restricted(unverifiedForMillis: Millis.days(8))),
+                       .degraded("Limited: account not verified for 8 d 0 h. Your data stays available; purchases and account changes are paused."))
     }
 
     func testDurationFormatting() {
@@ -250,6 +287,6 @@ final class DegradationPlannerTests: XCTestCase {
         XCTAssertEqual(DegradationPlanner.minutes(Millis.minutes(59)), "59 min")
         XCTAssertEqual(DegradationPlanner.minutes(Millis.minutes(185)), "3 h 5 min")
         XCTAssertEqual(DegradationPlanner.minutes(Millis.hours(52)), "2 d 4 h")
-        XCTAssertFalse(DegradationPlanner.minutes(.max).isEmpty)
+        XCTAssertEqual(DegradationPlanner.minutes(.max), "106751991167 d 7 h")
     }
 }

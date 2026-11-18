@@ -26,12 +26,14 @@ MUTANTS=(
   "$S/SessionContinuity.swift|        return age <= maxUnverifiedMillis|        return true|the unverified-session budget is enforced"
   "$S/EntitlementGrace.swift|guard !storeReachable else { return .denied(.expired) }|guard false else { return .denied(.expired) }|paying users keep access during a store outage"
   "$S/EntitlementGrace.swift|        guard now < graceEnd else { return .denied(.expired) }|        _ = graceEnd|the outage grace is bounded"
+  "$S/EntitlementGrace.swift|guard entitlement.verifiedAt < expiry else { return .denied(.expired) }|_ = entitlement.verifiedAt|grace never re-grants a lapse the app already confirmed"
   "$S/EntitlementGrace.swift|if let revoked = entitlement.revokedAt, revoked <= now { return .denied(.revoked) }|_ = entitlement.revokedAt|a refund revokes access even during an outage"
   "$S/DurableOutbox.swift|                if unchanged {
                     entries.remove(at: index)
                     report.pushed += 1|                if true {
                     entries.remove(at: index)
                     report.pushed += 1|a write that lands mid-push is not lost (actor reentrancy)"
+  "$S/DurableOutbox.swift|if unchanged, resolver.resolve(local: entries[index], remote: remote) == .keepRemote {|if resolver.resolve(local: entries[index], remote: remote) == .keepRemote {|a write that lands mid-push survives a conflict"
   "$S/DurableOutbox.swift|            entries[index].writeID = makeWriteID()|            // writeID kept|coalescing changes the write ID"
   "$S/DurableOutbox.swift|        guard !isDraining else {|        guard true else {|only one drain runs at a time"
   "$S/DurableOutbox.swift|        try restore()
@@ -44,6 +46,7 @@ MUTANTS=(
   "$S/DurableOutbox.swift|            deadLetters.removeFirst()|            _ = deadLetters|dead letters are bounded"
   "$S/RecoveryGate.swift|        carry = units % 60_000|        carry = 0|slow refill rates are not lost to rounding"
   "$S/RecoveryGate.swift|        return Int64(hash % UInt64(windowMillis))|        return Int64(hash % 2)|the fleet is spread across the recovery window"
+  "$S/RecoveryGate.swift|(1...10_000).contains(buckets)|buckets > 0|a hostile bucket count cannot exhaust memory"
   "$S/RecoveryGate.swift|            guard now >= slot else { return false }|            _ = slot|a client waits for its jittered slot"
   "$S/RecoveryGate.swift|        guard now > lastRefill else { return }|        guard now != lastRefill else { return }|a clock moved backwards earns no tokens"
   '$S/CapabilityRouter.swift|let lost = task.preferred.subtracting(chosen.capabilities).sorted()|let lost: [AICapability] = []|a fallback route says what it lost'

@@ -220,6 +220,49 @@ final class DurableOutboxTests: XCTestCase {
         XCTAssertEqual(pending.first?.payload, bytes("newer"))
     }
 
+    func testConflictOnSupersededContentKeepsTheNewerWrite() async throws {
+        // Same interleaving as above, but the server answers "conflict" and its copy
+        // is newer than the OLD content. The newer local write has not been judged
+        // yet, so it must survive, rebased onto the server version.
+        let outbox = makeOutbox()
+        _ = try await outbox.enqueue(recordKey: "note", payload: bytes("old"), baseVersion: 3, at: .minute(1))
+        let remote = RemoteRecord(recordKey: "note", version: 9, modifiedAt: .minute(99))
+        let transport = ReentrantTransport(outcome: .conflict(remote))
+        transport.outbox = outbox
+        let report = await outbox.drain(via: transport, maxPushes: 5)
+        XCTAssertEqual(report.discardedForRemote, 0)
+        XCTAssertEqual(report.rebasedAfterConflict, 1)
+        let pending = await outbox.pending
+        XCTAssertEqual(pending.first?.payload, bytes("newer"))
+        XCTAssertEqual(pending.first?.baseVersion, 9)
+    }
+
+    func testTransientFailureOfSupersededContentKeepsTheNewerWrite() async throws {
+        let outbox = makeOutbox()
+        _ = try await outbox.enqueue(recordKey: "note", payload: bytes("old"), baseVersion: 3, at: .minute(1))
+        let transport = ReentrantTransport(outcome: .transientFailure)
+        transport.outbox = outbox
+        let report = await outbox.drain(via: transport, maxPushes: 5)
+        XCTAssertEqual(report.status, .stoppedOnTransientFailure)
+        let pending = await outbox.pending
+        XCTAssertEqual(pending.first?.payload, bytes("newer"))
+        XCTAssertEqual(pending.first?.attempts, 1)
+    }
+
+    func testResetRecoversFromAnUndecodableQueue() async throws {
+        let store = InMemoryOutboxStore(entries: [])
+        store.failNextLoads(100)
+        let outbox = makeOutbox(store: store)
+        do {
+            _ = try await outbox.enqueue(recordKey: "a", payload: bytes("a"), baseVersion: 0, at: .minute(1))
+            XCTFail("enqueue must refuse while the persisted queue cannot be loaded")
+        } catch {}
+        try await outbox.resetDiscardingPendingWrites()
+        let outcome = try await outbox.enqueue(recordKey: "a", payload: bytes("a"), baseVersion: 0, at: .minute(1))
+        XCTAssertEqual(outcome, .accepted)
+        XCTAssertEqual(store.snapshot.map(\.recordKey), ["a"])
+    }
+
     func testOnlyOneDrainRunsAtATime() async throws {
         let outbox = makeOutbox()
         _ = try await outbox.enqueue(recordKey: "a", payload: bytes("1"), baseVersion: 0, at: .minute(1))

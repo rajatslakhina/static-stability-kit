@@ -83,7 +83,7 @@ public enum DegradationPlanner {
         case .activeUnverified(let age):
             return .degraded("Signed in on this device; Apple sign-in unreachable for \(minutes(age)).")
         case .restricted(let age):
-            return .degraded("Read-only: account not verified for \(minutes(age)). Purchases and account changes paused.")
+            return .degraded("Limited: account not verified for \(minutes(age)). Your data stays available; purchases and account changes are paused.")
         case .signedOut(let reason):
             switch reason {
             case .credentialRevoked: return .unavailable("Signed out: Apple ID access was revoked.")
@@ -106,7 +106,9 @@ public enum DegradationPlanner {
 
     static func syncMode(_ inputs: PostureInputs) -> FeatureMode {
         if inputs.pendingWrites >= inputs.outboxCapacity, inputs.outboxCapacity > 0 {
-            return .degraded("Sync queue full: new items stay on this device until iCloud returns.")
+            return inputs.syncAvailable
+                ? .degraded("Sync queue full: catching up, new items wait until it drains.")
+                : .degraded("Sync queue full: new items can't be queued until iCloud returns.")
         }
         guard inputs.pendingWrites > 0 else {
             return inputs.syncAvailable ? .full : .degraded("iCloud unreachable. New changes will be saved here first.")

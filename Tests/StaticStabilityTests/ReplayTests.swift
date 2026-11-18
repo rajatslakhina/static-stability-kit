@@ -10,7 +10,9 @@ final class ReplayTests: XCTestCase {
         try XCTUnwrap(reports.first { $0.architecture == architecture }, file: file, line: line)
     }
 
-    func testBothArchitecturesSeeTheSameWorkload() throws {
+    /// Guards the draw order: every client consumes the same random numbers each
+    /// minute whatever the architecture does, so the workload counters match.
+    func testBothArchitecturesDrawTheSameWorkload() throws {
         for reports in [Self.apple, Self.compound] {
             let naive = try pick(reports, .naive), stable = try pick(reports, .staticallyStable)
             XCTAssertEqual(naive.activeUserMinutes, stable.activeUserMinutes)
@@ -51,7 +53,7 @@ final class ReplayTests: XCTestCase {
 
     func testGraceHasAVisibleBoundedCost() throws {
         let naive = try pick(Self.apple, .naive), stable = try pick(Self.apple, .staticallyStable)
-        XCTAssertGreaterThan(stable.falseGrantUserMinutes, 0, "cancelled users inside the outage keep access")
+        XCTAssertGreaterThan(stable.falseGrantUserMinutes, 0, "cancelled users whose expiry falls inside the outage keep access")
         XCTAssertLessThan(stable.falseGrantUserMinutes * 5, naive.lockedOutPayingUserMinutes)
     }
 
@@ -61,7 +63,7 @@ final class ReplayTests: XCTestCase {
         XCTAssertLessThan(stable.peakSyncRequestsPerMinute * 2, naive.peakSyncRequestsPerMinute)
     }
 
-    func testCompoundOutageServesMostAIRequestsOnDevice() throws {
+    func testCompoundOutageAnswersMoreAIRequestsThanNaive() throws {
         let naive = try pick(Self.compound, .naive), stable = try pick(Self.compound, .staticallyStable)
         XCTAssertGreaterThan(naive.aiFailed, 0)
         XCTAssertEqual(naive.aiServedReduced, 0)
@@ -79,7 +81,7 @@ final class ReplayTests: XCTestCase {
         XCTAssertEqual(naive.writesLost, 7_935)
         XCTAssertEqual(naive.lockedOutPayingUserMinutes, 3_179)
         XCTAssertEqual(naive.peakSyncRequestsPerMinute, 1_042)
-        XCTAssertEqual(stable.falseGrantUserMinutes, 266)
+        XCTAssertEqual(stable.falseGrantUserMinutes, 219)
         XCTAssertEqual(stable.peakSyncRequestsPerMinute, 336)
         XCTAssertEqual(stable.requestsToDownDependencies, 35_901)
     }
@@ -140,6 +142,9 @@ final class ReplayTests: XCTestCase {
         XCTAssertTrue(scenario.isUp(.identity, atMinute: 210))
         XCTAssertTrue(scenario.isUp(.cloudAI, atMinute: 100))
         XCTAssertFalse(OutageScenario.compound.isUp(.cloudAI, atMinute: 100))
+        XCTAssertFalse(OutageScenario.compound.isUp(.remoteConfig, atMinute: 179))
+        XCTAssertTrue(OutageScenario.compound.isUp(.remoteConfig, atMinute: 180))
+        XCTAssertTrue(OutageScenario.apple17Nov2026.isUp(.remoteConfig, atMinute: 100))
         XCTAssertEqual(scenario.lastRecoveryMinute, 210)
         let inverted = OutageWindow(dependency: .identity, startMinute: 50, endMinute: 10)
         XCTAssertEqual(inverted.endMinute, 50, "an inverted window is empty, not negative")

@@ -29,7 +29,10 @@ public struct DeadLetter: Sendable, Codable, Equatable {
 /// Synchronous persistence for the outbox.
 ///
 /// Synchronous on purpose: ``DurableOutbox`` saves inside its actor without
-/// suspending, so `.accepted` means "on disk", and two interleaved enqueues can
+/// suspending, so `.accepted` means "handed to the store" (for ``FileOutboxStore``,
+/// written atomically by write-and-rename; there is no explicit fsync, so it
+/// survives an app crash but is not guaranteed through a power loss), and two
+/// interleaved enqueues can
 /// never persist their snapshots out of order. The cost is that a slow disk blocks
 /// the actor for one small write; for an outbox bounded at a few hundred entries
 /// that is the right trade.
@@ -87,7 +90,9 @@ public final class InMemoryOutboxStore: OutboxStore, @unchecked Sendable {
     }
 }
 
-/// JSON file store with atomic replace.
+/// JSON file store with atomic replace. Payloads are stored as plain JSON; on iOS
+/// the file gets `completeUntilFirstUserAuthentication` data protection. Encrypt
+/// payloads yourself if they need more than that.
 public struct FileOutboxStore: OutboxStore {
     public let url: URL
 
@@ -101,7 +106,12 @@ public struct FileOutboxStore: OutboxStore {
     }
 
     public func save(_ entries: [OutboxEntry]) throws {
-        try JSONEncoder().encode(entries).write(to: url, options: .atomic)
+        let data = try JSONEncoder().encode(entries)
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #else
+        try data.write(to: url, options: .atomic)
+        #endif
     }
 }
 
@@ -238,6 +248,16 @@ public actor DurableOutbox {
     public func restore() throws {
         guard !restored else { return }
         entries = try store.load()
+        restored = true
+    }
+
+    /// Discards every pending write, in memory and in the store, and marks the
+    /// outbox restored. The escape hatch for a persisted queue that can no longer be
+    /// decoded (`drain` reports `.restoreFailed` and `enqueue` throws until then).
+    /// Destructive by design: call it only after deciding the queued writes are lost.
+    public func resetDiscardingPendingWrites() throws {
+        try store.save([])
+        entries = []
         restored = true
     }
 

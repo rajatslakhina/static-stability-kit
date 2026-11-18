@@ -42,6 +42,9 @@ final class RecoveryGateTests: XCTestCase {
         XCTAssertFalse(RecoveryJitter.isRoughlyUniform(delays: outOfRange, windowMillis: window, buckets: 1, tolerancePercent: 100))
         XCTAssertFalse(RecoveryJitter.isRoughlyUniform(delays: [], windowMillis: window, buckets: 10, tolerancePercent: 10))
         XCTAssertFalse(RecoveryJitter.isRoughlyUniform(delays: [1], windowMillis: 0, buckets: 10, tolerancePercent: 10))
+        // A hostile bucket count is refused rather than allocated.
+        XCTAssertFalse(RecoveryJitter.isRoughlyUniform(delays: [1], windowMillis: 10, buckets: .max, tolerancePercent: 10))
+        XCTAssertFalse(RecoveryJitter.isRoughlyUniform(delays: [1], windowMillis: 10, buckets: 10_001, tolerancePercent: 10))
     }
 
     func testTokenBucketKeepsFractionalRefill() {

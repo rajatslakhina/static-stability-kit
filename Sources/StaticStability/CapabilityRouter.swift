@@ -92,6 +92,15 @@ public struct CapabilityRouter: Sendable, Equatable {
         guard let chosen = live.first(where: { task.required.isSubset(of: $0.capabilities) }) else {
             let reachable = live.reduce(into: Set<AICapability>()) { $0.formUnion($1.capabilities) }
             let missing = task.required.subtracting(reachable).sorted()
+            guard !missing.isEmpty else {
+                // Every required capability exists somewhere, but no single available
+                // model has all of them (or no model is available for an empty set).
+                let all = task.required.sorted().map(\.displayName).joined(separator: ", ")
+                let notice = all.isEmpty
+                    ? "\(task.name) has no model available right now."
+                    : "\(task.name) needs \(all) together, and no single available model provides all of them."
+                return .unavailable(missing: [], notice: notice)
+            }
             let names = missing.map(\.displayName).joined(separator: ", ")
             return .unavailable(
                 missing: missing,
