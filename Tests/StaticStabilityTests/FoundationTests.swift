@@ -71,6 +71,16 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(guardrail.observe(.minute(11)), .minute(11))
     }
 
+    func testReanchoringToAnOlderTimeReopensRollbackByTheDifference() {
+        // Documented hazard: anchoring to a stale "trusted" time (a days-old signed
+        // transaction date) moves the mark back, and the clock can then be set back
+        // into that gap. Only anchor to a current server time.
+        var guardrail = MonotonicTimeGuard()
+        _ = guardrail.observe(.minute(1_000))
+        guardrail.reanchor(to: .minute(400))
+        XCTAssertEqual(guardrail.observe(.minute(500)), .minute(500), "500 < 1,000 is accepted again")
+    }
+
     func testFNV1aMatchesPublishedVectors() {
         // Reference values for 64-bit FNV-1a. A process-seeded hash (Hasher) would
         // produce different values on every run and fail here.

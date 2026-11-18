@@ -86,6 +86,18 @@ final class ReplayTests: XCTestCase {
         XCTAssertEqual(stable.requestsToDownDependencies, 35_901)
     }
 
+    func testCompoundGoldenValuesQuotedInTheREADME() throws {
+        let naive = try pick(Self.compound, .naive), stable = try pick(Self.compound, .staticallyStable)
+        XCTAssertEqual(naive.aiServedFull, 12_239)
+        XCTAssertEqual(naive.aiFailed, 4_044)
+        XCTAssertEqual(stable.aiServedFull, 12_140)
+        XCTAssertEqual(stable.aiServedReduced, 2_713)
+        XCTAssertEqual(stable.aiFailed, 1_430)
+        XCTAssertEqual(naive.aiServedFull - stable.aiServedFull, 99)
+        XCTAssertEqual(String(format: "%.1f", naive.aiServedPercent), "75.2")
+        XCTAssertEqual(String(format: "%.1f", stable.aiServedPercent), "91.2")
+    }
+
     func testWithoutAnOutageTheArchitecturesLookTheSameToUsers() throws {
         let calm = OutageScenario(id: "calm", title: "Calm", summary: "", durationMinutes: 240, windows: [])
         for report in OutageReplay.compare(calm) {

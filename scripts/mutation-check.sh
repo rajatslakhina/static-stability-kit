@@ -14,6 +14,8 @@ MUTANTS=(
   "$S/CircuitBreaker.swift|guard permit.epoch == epoch else { return false }|_ = permit.epoch|a result from an earlier epoch cannot pose as the current probe"
   "$S/CircuitBreaker.swift|case .closed where !permit.isProbe, .halfOpen where permit.isProbe:|case .closed, .halfOpen:|a pre-trip request's late result is not counted as the probe"
   "$S/CircuitBreaker.swift|            guard probeInFlight else { return false }|            _ = probeInFlight|half-open counts an outcome only while a probe is in flight"
+  "$S/CircuitBreaker.swift|            // probe can't be counted as this one's.
+            epoch &+= 1|            // probe can't be counted as this one's.|a duplicate result from the previous probe cannot close the breaker"
   "$S/CircuitBreaker.swift|times: consecutiveTrips - 1,|times: 0,|cooldown doubles on each consecutive trip"
   "$S/CircuitBreaker.swift|let jitter = Int64(draw)|let jitter = Int64(draw) * 0|clients that trip together do not reopen in lockstep"
   "$S/CircuitBreaker.swift|        if slots[oldest] { failures -= 1 }|        // (aging removed)|old outcomes age out of the window"

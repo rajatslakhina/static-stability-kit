@@ -109,6 +109,11 @@ public struct CircuitBreaker: Sendable, Equatable {
     /// Asks to send one request. Returns `nil` when the breaker refuses it locally.
     /// Moves `open` to `halfOpen` once the cooldown has passed, and in `halfOpen`
     /// admits exactly one probe until its outcome is recorded.
+    ///
+    /// Always record every permit, including on cancellation or an error path
+    /// (record `success: false`). A probe whose result is never recorded leaves the
+    /// breaker half-open with the probe still "in flight", refusing every request
+    /// until the process restarts.
     public mutating func requestPermit(at now: Instant) -> BreakerPermit? {
         guard permitsRequest(at: now) else { return nil }
         if case .halfOpen = state { return BreakerPermit(epoch: epoch, isProbe: true) }
@@ -144,6 +149,9 @@ public struct CircuitBreaker: Sendable, Equatable {
         case .halfOpen(let successes, let probeInFlight):
             guard !probeInFlight else { return false }
             state = .halfOpen(successes: successes, probeInFlight: true)
+            // Each probe gets its own epoch, so a duplicate result from the previous
+            // probe can't be counted as this one's.
+            epoch &+= 1
             return true
         }
     }

@@ -90,8 +90,9 @@ public enum ReplayArchitecture: String, Sendable, CaseIterable, Identifiable {
 }
 
 /// Population and policy parameters for a replay. Clamped so no setting can make
-/// the simulation trap; the largest allowed replay (5,000 clients, 1,440 minutes)
-/// takes seconds on a laptop, so on a phone keep runs near the defaults.
+/// the simulation trap, and so the largest allowed replay (5,000 clients, 1,440
+/// minutes) is bounded in time and memory. It is still about 20× the default
+/// workload, so on a phone keep runs near the defaults.
 public struct ReplayConfig: Sendable, Equatable {
     public let clients: Int
     public let seed: UInt64

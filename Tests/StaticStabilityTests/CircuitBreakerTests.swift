@@ -146,6 +146,19 @@ final class CircuitBreakerTests: XCTestCase {
         XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: false))
     }
 
+    func testDuplicateResultFromThePreviousProbeInTheSameHalfOpenIsIgnored() {
+        var breaker = CircuitBreaker(policy: policy)  // needs 2 probe successes to close
+        feed(&breaker, Array(repeating: false, count: 5))
+        guard let p1 = breaker.requestPermit(at: .minute(1)) else { return XCTFail() }
+        breaker.record(p1, success: true, at: .minute(1))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: false))
+        guard let p2 = breaker.requestPermit(at: .minute(1)) else { return XCTFail() }
+        // P1's callback fires a second time while P2 is out: it must not close the breaker.
+        XCTAssertFalse(breaker.record(p1, success: true, at: .minute(1)))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: true))
+        XCTAssertTrue(breaker.record(p2, success: true, at: .minute(1)), "the real second probe closes it")
+    }
+
     func testHalfOpenIgnoresBoolRecordWhenNoProbeIsInFlight() {
         var breaker = CircuitBreaker(policy: policy)
         feed(&breaker, Array(repeating: false, count: 5))

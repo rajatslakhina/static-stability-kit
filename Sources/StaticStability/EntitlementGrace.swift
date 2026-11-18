@@ -75,8 +75,11 @@ public struct EntitlementPolicy: Sendable, Equatable {
     }
 
     /// - Parameters:
-    ///   - storeReachable: whether the app could refresh transactions just now. Pass
-    ///     `false` when a circuit breaker for the store is not closed.
+    ///   - storeReachable: `true` only if a refresh from the store just succeeded.
+    ///     A failed refresh, or one the circuit breaker refused, is `false`. (Don't
+    ///     derive it from the breaker being closed: a breaker stays closed through
+    ///     the first failures of an outage, and passing `true` then would lock out
+    ///     subscribers whose renewal is due.)
     ///   - now: an effective instant from ``MonotonicTimeGuard``, so setting the
     ///     clock back cannot extend the grace.
     public func decide(

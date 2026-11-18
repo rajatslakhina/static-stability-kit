@@ -113,8 +113,8 @@ public struct Instant: Comparable, Hashable, Sendable, Codable, CustomStringConv
 /// - A clock moved *forward* and then back leaves the high-water mark in the
 ///   future until real time catches up. Until then every time-based policy sees the
 ///   future: a verified, unexpired subscription can be denied as expired, and a
-///   session can turn `.restricted`. Call ``reanchor(to:)`` with a trusted time
-///   (for example a server timestamp or a signed transaction date) to recover.
+///   session can turn `.restricted`. Call ``reanchor(to:)`` with a trusted
+///   *current* time (the `Date` header of a fresh server response) to recover.
 /// - A fresh install has no high-water mark, so it trusts the first time it sees.
 public struct MonotonicTimeGuard: Sendable, Codable, Equatable {
     public private(set) var highWater: Instant?
@@ -124,9 +124,13 @@ public struct MonotonicTimeGuard: Sendable, Codable, Equatable {
     }
 
     /// Replaces the high-water mark with a time the app trusts more than the device
-    /// clock (a server timestamp, a signed transaction date). This is the only way
-    /// to move the mark backwards, and so the way to recover after the device clock
-    /// was set forward and back.
+    /// clock. This is the only way to move the mark backwards, and so the way to
+    /// recover after the device clock was set forward and back.
+    ///
+    /// Pass a *current* trusted time, such as the `Date` header of a server response
+    /// received just now. An older time (a cached transaction's signed date, say)
+    /// moves the mark back by the difference, and the user can then set the clock
+    /// back into that gap to stretch a grace or a session budget again.
     public mutating func reanchor(to trusted: Instant) {
         highWater = trusted
     }
