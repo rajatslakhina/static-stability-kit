@@ -166,7 +166,7 @@ final class CapabilityRouterTests: XCTestCase {
         guard case .reduced(let backend, let lost, let notice) = route else { return XCTFail("expected reduced, got \(route)") }
         XCTAssertEqual(backend, InferenceBackend.onDevice.name)
         XCTAssertEqual(lost, [.toolUse])
-        XCTAssertTrue(notice.contains("tool use"))
+        XCTAssertEqual(notice, "Draft reply: answered by On-device model, without tool use.")
     }
 
     func testTaskNeedingCloudOnlyCapabilityIsUnavailableNotSilentlyDowngraded() {

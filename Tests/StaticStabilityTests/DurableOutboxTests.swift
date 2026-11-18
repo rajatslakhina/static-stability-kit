@@ -139,6 +139,7 @@ final class DurableOutboxTests: XCTestCase {
 
     func testZeroCapacityRejectsEverything() async throws {
         let outbox = makeOutbox(capacity: -4)
+        XCTAssertEqual(outbox.capacity, 0, "readable without await, clamped")
         let outcome = try await outbox.enqueue(recordKey: "a", payload: bytes("1"), baseVersion: 0, at: .minute(1))
         XCTAssertEqual(outcome, .rejectedFull)
     }

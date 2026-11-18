@@ -205,8 +205,9 @@ public struct DrainReport: Sendable, Equatable {
 ///   never lost: the actor suspends at `await transport.push`, so after resuming the
 ///   drain re-reads the entry and removes it only if its `writeID` is unchanged.
 public actor DurableOutbox {
-    public let capacity: Int
-    public let deadLetterCapacity: Int
+    // Immutable and Sendable, so readable from any isolation domain without `await`.
+    public nonisolated let capacity: Int
+    public nonisolated let deadLetterCapacity: Int
     private let store: any OutboxStore
     private let makeWriteID: @Sendable () -> String
     private var entries: [OutboxEntry] = []

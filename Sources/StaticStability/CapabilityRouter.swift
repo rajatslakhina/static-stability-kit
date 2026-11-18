@@ -104,7 +104,7 @@ public struct CapabilityRouter: Sendable, Equatable {
         return .reduced(
             backend: chosen.name,
             lost: lost,
-            notice: "\(task.name) is running on \(chosen.name) without \(names)."
+            notice: "\(task.name): answered by \(chosen.name), without \(names)."
         )
     }
 }
