@@ -51,6 +51,17 @@ private final class ReentrantTransport: SyncTransport, @unchecked Sendable {
     }
 }
 
+/// Resets the outbox while its push is in flight.
+private final class ResettingTransport: SyncTransport, @unchecked Sendable {
+    // @unchecked: `outbox` is set once before any push and never mutated after.
+    var outbox: DurableOutbox?
+
+    func push(_ entry: OutboxEntry) async -> PushOutcome {
+        try? await outbox?.resetDiscardingPendingWrites()
+        return .accepted(newVersion: 1)
+    }
+}
+
 /// Holds the first push until released, so a second drain can be started while it
 /// is in flight. Later pushes return at once: if the single-drain guard were broken,
 /// the second drain's push would complete and the test would fail fast, not hang.
@@ -281,6 +292,33 @@ final class DurableOutboxTests: XCTestCase {
         XCTAssertEqual(store.snapshot.map(\.recordKey), ["a"])
     }
 
+    func testResetDuringAnInFlightPushIsHandled() async throws {
+        let outbox = makeOutbox()
+        _ = try await outbox.enqueue(recordKey: "a", payload: bytes("1"), baseVersion: 0, at: .minute(1))
+        let transport = ResettingTransport()
+        transport.outbox = outbox
+        let report = await outbox.drain(via: transport, maxPushes: 5)
+        XCTAssertEqual(report.pushed, 0, "the entry vanished mid-push and is not counted or brought back")
+        XCTAssertEqual(report.remaining, 0)
+        let pending = await outbox.pending
+        XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testCancelledTaskStopsTheDrainBeforeSending() async throws {
+        let outbox = makeOutbox()
+        _ = try await outbox.enqueue(recordKey: "a", payload: bytes("1"), baseVersion: 0, at: .minute(1))
+        let transport = ScriptedTransport([])
+        let task = Task { () -> DrainReport in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await outbox.drain(via: transport, maxPushes: 5)
+        }
+        let report = await task.value
+        XCTAssertEqual(report.status, .cancelled)
+        let sent = await transport.sent.count
+        XCTAssertEqual(sent, 0)
+        XCTAssertEqual(report.remaining, 1)
+    }
+
     func testOnlyOneDrainRunsAtATime() async throws {
         let outbox = makeOutbox()
         _ = try await outbox.enqueue(recordKey: "a", payload: bytes("1"), baseVersion: 0, at: .minute(1))
@@ -303,6 +341,7 @@ final class DurableOutboxTests: XCTestCase {
         let remote = RemoteRecord(recordKey: "a", version: 2, modifiedAt: .minute(9))
         let report = await outbox.drain(via: ScriptedTransport([.conflict(remote)]), maxPushes: 5)
         XCTAssertEqual(report.discardedForRemote, 1)
+        XCTAssertEqual(report.discardedRecordKeys, ["a"], "the app learns which record to refetch")
         XCTAssertEqual(report.remaining, 0)
     }
 

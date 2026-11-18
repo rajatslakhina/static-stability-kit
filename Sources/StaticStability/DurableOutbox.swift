@@ -186,6 +186,9 @@ public struct DrainReport: Sendable, Equatable {
         /// The persisted entries could not be loaded, so nothing was pushed: pushing
         /// without them could reorder or duplicate writes.
         case restoreFailed
+        /// The calling task was cancelled (for example, the app was backgrounded).
+        /// Pushes already sent were handled; nothing more was sent.
+        case cancelled
     }
 
     public internal(set) var status: Status = .completed
@@ -198,6 +201,10 @@ public struct DrainReport: Sendable, Equatable {
     /// arrived while it was in flight. The newer content stays pending.
     public internal(set) var supersededPermanentFailures = 0
     public internal(set) var discardedForRemote = 0
+    /// The records whose local write was discarded because the resolver picked the
+    /// server's copy, in drain order. Refetch these to reconcile. Bounded by the
+    /// pushes in one drain.
+    public internal(set) var discardedRecordKeys: [String] = []
     public internal(set) var deadLettered = 0
     public internal(set) var transientFailures = 0
     /// Saves that failed during the drain. In-memory state is still right; on a
@@ -209,11 +216,14 @@ public struct DrainReport: Sendable, Equatable {
 
 /// A durable, bounded, coalescing outbox for writes made while sync is unavailable.
 ///
-/// Versions are the app's job: when a push is accepted, your `SyncTransport` must
-/// record the returned `newVersion` (and the server's version when a conflict is
-/// resolved for the server) in your model, and pass it as `baseVersion` on the next
-/// `enqueue` for that record. The outbox only rebases entries that are still
-/// pending; a stale `baseVersion` turns every later edit into a conflict.
+/// Versions are the app's job. When a push is accepted, your `SyncTransport` must
+/// record the returned `newVersion` in your model. On every `.conflict` it must
+/// record `remote.version`: if the resolver keeps the local write, that write's
+/// follow-up accepted push supersedes it; if the resolver picks the server's copy,
+/// the record key appears in `DrainReport.discardedRecordKeys` so the app can
+/// refetch it and tell the user. Pass the recorded version as `baseVersion` on the
+/// next `enqueue` of a new entry for that record. A stale `baseVersion` turns every
+/// later edit into a conflict.
 ///
 /// Invariants (each has a test, and the mutation script checks the tests bite):
 /// - `enqueue` returns `.accepted`/`.coalesced` only after the store saved; if the
@@ -283,6 +293,9 @@ public actor DurableOutbox {
         return max(now.millis(since: oldest), 0)
     }
 
+    /// Queues a write. `baseVersion` is used only when this creates a new entry: a
+    /// write that coalesces into a pending entry keeps that entry's base, which the
+    /// outbox itself rebases as pushes and conflicts come back.
     public func enqueue(
         recordKey: String,
         payload: Data,
@@ -349,6 +362,10 @@ public actor DurableOutbox {
         // server that always answers "conflict" cannot spin the drain.
         var parked = Set<String>()
         while let sent = entries.first(where: { !parked.contains($0.recordKey) }) {
+            guard !Task.isCancelled else {
+                report.status = .cancelled
+                break
+            }
             guard budget > 0 else {
                 report.status = .budgetExhausted
                 break
@@ -376,6 +393,7 @@ public actor DurableOutbox {
                 if resolver.resolve(local: entries[index], remote: remote) == .keepRemote {
                     entries.remove(at: index)
                     report.discardedForRemote += 1
+                    report.discardedRecordKeys.append(sent.recordKey)
                 } else {
                     // The resolver kept the local write: rebase onto the server's
                     // version and push again on the next pass.

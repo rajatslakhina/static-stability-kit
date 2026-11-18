@@ -32,7 +32,7 @@ MUTANTS=(
   "$S/EntitlementGrace.swift|guard !storeReachable else { return .denied(.expired) }|guard false else { return .denied(.expired) }|paying users keep access during a store outage"
   "$S/EntitlementGrace.swift|        guard now < graceEnd else { return .denied(.expired) }|        _ = graceEnd|the outage grace is bounded"
   "$S/EntitlementGrace.swift|guard entitlement.verifiedAt < expiry else { return .denied(.expired) }|_ = entitlement.verifiedAt|grace never re-grants a lapse the app already confirmed"
-  "$S/EntitlementGrace.swift|if let revoked = entitlement.revokedAt, revoked <= now { return .denied(.revoked) }|_ = entitlement.revokedAt|a refund revokes access even during an outage"
+  "$S/EntitlementGrace.swift|if entitlement.revokedAt != nil { return .denied(.revoked) }|_ = entitlement.revokedAt|a refund the app has seen revokes access even during an outage"
   "$S/DurableOutbox.swift|                if unchanged {
                     entries.remove(at: index)
                     report.pushed += 1|                if true {
@@ -45,6 +45,7 @@ MUTANTS=(
         let before = entries|        let before = entries|a write made before restore cannot erase the persisted queue"
   "$S/DurableOutbox.swift|            entries = before|            _ = before|a failed save rolls the enqueue back"
   "$S/DurableOutbox.swift|guard entries.count < capacity else { return .rejectedFull }|_ = capacity|the outbox is bounded"
+  "$S/DurableOutbox.swift|            guard !Task.isCancelled else {|            guard true else {|a cancelled task stops the drain"
   "$S/DurableOutbox.swift|                stop = true|                stop = false|a transient failure stops the drain"
   "$S/DurableOutbox.swift|                    parked.insert(sent.recordKey)
                     report.rebasedAfterConflict += 1|                    report.rebasedAfterConflict += 1|an always-conflicting server cannot spin the drain"

@@ -148,7 +148,9 @@ final class EntitlementPolicyTests: XCTestCase {
     func testRevocationWinsOverGrace() {
         let refunded = monthly(expiresAtMinute: 100, revokedAtMinute: 50)
         XCTAssertEqual(policy.decide(refunded, storeReachable: false, at: .minute(60)), .denied(.revoked))
-        XCTAssertTrue(policy.decide(refunded, storeReachable: false, at: .minute(40)).isGranted, "revoked in the future")
+        // A device clock behind real time makes the revocation look future-dated; it
+        // still wins, because the store only reports revocations that happened.
+        XCTAssertEqual(policy.decide(refunded, storeReachable: true, at: .minute(40)), .denied(.revoked))
     }
 
     func testNonExpiringAndMissing() {
@@ -221,6 +223,12 @@ final class CapabilityRouterTests: XCTestCase {
 }
 
 final class DegradationPlannerTests: XCTestCase {
+    /// Expected strings are written with ordinary spaces; the planner puts a
+    /// non-breaking space between each number and its unit.
+    private func nb(_ text: String) -> String {
+        text.replacingOccurrences(of: #"(\d) (min|h|d)\b"#, with: "$1\u{00A0}$2", options: .regularExpression)
+    }
+
     private func inputs(
         session: SessionDecision = .active(verifiedAgoMillis: 0),
         entitlement: EntitlementDecision = .granted(.verified),
@@ -251,10 +259,10 @@ final class DegradationPlannerTests: XCTestCase {
             config: .lastKnownGood(ageMillis: Millis.minutes(95))
         ))
         let byDependency = Dictionary(uniqueKeysWithValues: posture.map { ($0.dependency, $0.mode) })
-        XCTAssertEqual(byDependency[.identity], .degraded("Signed in on this device; last verified with Apple 1 h 30 min ago."))
-        XCTAssertEqual(byDependency[.storeKit], .degraded("Unlocked from your last receipt; App Store unreachable. Grace ends in 47 h 0 min."))
-        XCTAssertEqual(byDependency[.cloudSync], .degraded("3 change(s) saved on this device, oldest 12 min old; will sync when iCloud returns."))
-        XCTAssertEqual(byDependency[.remoteConfig], .degraded("Using flags from 1 h 35 min ago."))
+        XCTAssertEqual(byDependency[.identity], .degraded(nb("Signed in on this device; last verified with Apple 1 h 30 min ago.")))
+        XCTAssertEqual(byDependency[.storeKit], .degraded(nb("Unlocked from your last receipt; App Store unreachable. Grace ends in 47 h 0 min.")))
+        XCTAssertEqual(byDependency[.cloudSync], .degraded(nb("3 change(s) saved on this device, oldest 12 min old; will sync when iCloud returns.")))
+        XCTAssertEqual(byDependency[.remoteConfig], .degraded(nb("Using flags from 1 h 35 min ago.")))
         XCTAssertEqual(byDependency[.cloudAI], .full)
     }
 
@@ -279,14 +287,14 @@ final class DegradationPlannerTests: XCTestCase {
 
     func testRestrictedSessionWording() {
         XCTAssertEqual(DegradationPlanner.sessionMode(.restricted(unverifiedForMillis: Millis.days(8))),
-                       .degraded("Limited: account not verified for 8 d 0 h. Your data stays available; purchases and account changes are paused."))
+                       .degraded(nb("Limited: account not verified for 8 d 0 h. Your data stays available; purchases and account changes are paused.")))
     }
 
     func testDurationFormatting() {
-        XCTAssertEqual(DegradationPlanner.minutes(-5), "0 min")
-        XCTAssertEqual(DegradationPlanner.minutes(Millis.minutes(59)), "59 min")
-        XCTAssertEqual(DegradationPlanner.minutes(Millis.minutes(185)), "3 h 5 min")
-        XCTAssertEqual(DegradationPlanner.minutes(Millis.hours(52)), "2 d 4 h")
-        XCTAssertEqual(DegradationPlanner.minutes(.max), "106751991167 d 7 h")
+        XCTAssertEqual(DegradationPlanner.minutes(-5), nb("0 min"))
+        XCTAssertEqual(DegradationPlanner.minutes(Millis.minutes(59)), nb("59 min"))
+        XCTAssertEqual(DegradationPlanner.minutes(Millis.minutes(185)), nb("3 h 5 min"))
+        XCTAssertEqual(DegradationPlanner.minutes(Millis.hours(52)), nb("2 d 4 h"))
+        XCTAssertEqual(DegradationPlanner.minutes(.max), nb("106751991167 d 7 h"))
     }
 }

@@ -139,12 +139,14 @@ public enum DegradationPlanner {
         }
     }
 
-    /// "42 min", "3 h 5 min", "2 d 4 h".
+    /// "42 min", "3 h 5 min", "2 d 4 h", with a non-breaking space between each
+    /// number and its unit so a line never wraps between "1" and "h".
     static func minutes(_ millis: Int64) -> String {
+        let nbsp = "\u{00A0}"
         let totalMinutes = max(millis, 0) / 60_000
-        if totalMinutes < 60 { return "\(totalMinutes) min" }
+        if totalMinutes < 60 { return "\(totalMinutes)\(nbsp)min" }
         let hours = totalMinutes / 60
-        if hours < 48 { return "\(hours) h \(totalMinutes % 60) min" }
-        return "\(hours / 24) d \(hours % 24) h"
+        if hours < 48 { return "\(hours)\(nbsp)h \(totalMinutes % 60)\(nbsp)min" }
+        return "\(hours / 24)\(nbsp)d \(hours % 24)\(nbsp)h"
     }
 }

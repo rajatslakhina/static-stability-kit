@@ -9,7 +9,8 @@ public struct VerifiedEntitlement: Sendable, Codable, Equatable {
     public let productID: String
     /// `nil` for a non-expiring purchase.
     public let expiresAt: Instant?
-    /// Set when the store reported a refund or revocation.
+    /// Set when the store reported a refund or revocation. Any non-nil value denies
+    /// access, even if the date looks like the future (a clock behind real time).
     public let revokedAt: Instant?
     /// When the app last refreshed this entitlement from the store successfully
     /// (not when the purchase was first verified). Update it on every successful
@@ -88,7 +89,9 @@ public struct EntitlementPolicy: Sendable, Equatable {
         at now: Instant
     ) -> EntitlementDecision {
         guard let entitlement else { return .denied(.noVerifiedTransaction) }
-        if let revoked = entitlement.revokedAt, revoked <= now { return .denied(.revoked) }
+        // StoreKit sets a revocation date only once the revocation has happened, so any
+        // revocation the app has seen is enforced, whatever the device clock says.
+        if entitlement.revokedAt != nil { return .denied(.revoked) }
         guard let expiry = entitlement.expiresAt else { return .granted(.verified) }
         if now < expiry { return .granted(.verified) }
         guard !storeReachable else { return .denied(.expired) }
