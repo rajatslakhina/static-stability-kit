@@ -64,7 +64,7 @@ public struct LastKnownGood<Value: Sendable & Equatable>: Sendable {
         isValid: (Value) -> Bool
     ) -> OfferOutcome {
         guard isValid(value) else { return .rejectedInvalid }
-        _ = self.fetchedAt
+        if let previous = self.fetchedAt, fetchedAt < previous { return .rejectedOutOfOrder }
         current = value
         self.fetchedAt = fetchedAt
         return .accepted

@@ -117,7 +117,7 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 ## Install
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.2.3")
+.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.2.4")
 ```
 
 ```swift
