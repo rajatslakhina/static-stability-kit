@@ -251,7 +251,7 @@ final class DegradationPlannerTests: XCTestCase {
             config: .lastKnownGood(ageMillis: Millis.minutes(95))
         ))
         let byDependency = Dictionary(uniqueKeysWithValues: posture.map { ($0.dependency, $0.mode) })
-        XCTAssertEqual(byDependency[.identity], .degraded("Signed in on this device; Apple sign-in unreachable for 1 h 30 min."))
+        XCTAssertEqual(byDependency[.identity], .degraded("Signed in on this device; last verified with Apple 1 h 30 min ago."))
         XCTAssertEqual(byDependency[.storeKit], .degraded("Unlocked from your last receipt; App Store unreachable. Grace ends in 47 h 0 min."))
         XCTAssertEqual(byDependency[.cloudSync], .degraded("3 change(s) saved on this device, oldest 12 min old; will sync when iCloud returns."))
         XCTAssertEqual(byDependency[.remoteConfig], .degraded("Using flags from 1 h 35 min ago."))

@@ -2,7 +2,7 @@
 
 **Your iOS app shouldn't go down because Apple did.**
 
-On 17 November 2026, an Apple "internal update" took down Apple Account sign-in, Sign in with Apple, the App Store and iCloud together for hours ([MacRumors](https://www.macrumors.com/2026/11/17/apple-is-down-in-a-big-way-today/), [Apple's explanation](https://www.macrumors.com/2026/11/17/apple-outage-internal-update/)). For an app built on the usual per-dependency policies, an outage like that means users signed out, subscribers losing features they paid for, and edits made during the outage gone. The replay below measures exactly that.
+On 17 November 2026, an Apple "internal update" took down Apple Account sign-in, Sign in with Apple, the App Store and iCloud together for hours ([MacRumors](https://www.macrumors.com/2026/11/17/apple-is-down-in-a-big-way-today/), [Apple's statement, via MacRumors](https://www.macrumors.com/2026/11/17/apple-outage-internal-update/)). For an app built on the usual per-dependency policies, an outage like that means users signed out, subscribers losing features they paid for, and edits made during the outage gone. The replay below measures exactly that.
 
 This package is the client-side resilience layer that stops those things from happening. It makes an app **statically stable**: every decision the app makes about its users during an outage comes from state it already holds locally, so losing a dependency degrades a feature instead of breaking it. It ships with a deterministic fault-injection replay that runs the 17 November outage over 1,000 simulated clients and measures what users actually experienced.
 
@@ -34,24 +34,25 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 ## What's in it
 
 ```
- per-dependency health            local decisions                         what the user sees
-┌────────────────────┐   ┌──────────────────────────────────────┐   ┌───────────────────────┐
-│ CircuitBreaker      │──▶│ SessionContinuity   (identity)        │──▶│                       │
-│  rate-based, probe- │   │ EntitlementPolicy   (StoreKit)        │   │  DegradationPlanner   │
-│  driven, jittered   │   │ DurableOutbox +     (iCloud sync)     │   │  full / degraded /    │
-│  cooldown, one      │   │   RecoveryGate                        │   │  unavailable, with    │
-│  half-open probe    │   │ LastKnownGood       (remote config)   │   │  the reason in words  │
-│                     │   │ CapabilityRouter    (cloud AI)        │   │                       │
-└────────────────────┘   └──────────────────────────────────────┘   └───────────────────────┘
-          ▲                                  ▲
-          └──────── OutageReplay drives all of these with scripted faults and reports SLOs
+ per-dependency health      local decisions                            what the user sees
+┌──────────────────────┐   ┌──────────────────────────────────────┐   ┌───────────────────────┐
+│ CircuitBreaker       │──▶│ SessionContinuity   (identity)       │──▶│                       │
+│   rate-based, probe- │   │ EntitlementPolicy   (StoreKit)       │   │ DegradationPlanner    │
+│   driven, jittered   │   │ DurableOutbox +     (iCloud sync)    │   │ full / degraded /     │
+│   cooldown, one      │   │   RecoveryGate                       │   │ unavailable, with     │
+│   half-open probe    │   │ LastKnownGood       (remote config)  │   │ the reason in words   │
+│                      │   │ CapabilityRouter    (cloud AI)       │   │                       │
+└──────────────────────┘   └──────────────────────────────────────┘   └───────────────────────┘
+           ▲                                  ▲
+           └──────────────────────────────────┘
+             OutageReplay drives all of these with scripted faults and reports SLOs
 ```
 
 | Type | Problem it solves |
 |---|---|
 | `CircuitBreaker`, `BreakerPolicy` | Stops sending requests to a dependency that is down. It trips on a failure *rate* over a window, with a minimum sample count, so one bad request is noise rather than an outage. The cooldown is exponential and jittered per client, and half-open lets exactly one probe through at a time. Each admitted request gets a `BreakerPermit` carrying the breaker's epoch, so a slow request sent before the trip can't come back after the cooldown and pose as the probe. |
 | `SessionContinuity` | Tells "the provider said no" (`.revoked`, `.notFound`: sign out) apart from "the provider did not answer" (carry on). After a 7-day unverified budget the session becomes `.restricted`: the user keeps their data and sensitive actions are paused (the app enforces which). It is never signed out. |
-| `EntitlementPolicy`, `VerifiedEntitlement` | Grants access from locally verified transactions. Past expiry, it grants a bounded grace (48 h by default) only while the store is unreachable, and only if no successful refresh has already confirmed the lapse, so going offline after the app has seen the lapse doesn't bring access back. A refund or revocation always wins. |
+| `EntitlementPolicy`, `VerifiedEntitlement` | Grants access from locally verified transactions. Past expiry, it grants a bounded grace (48 h by default) only while the store is unreachable, and only if no successful refresh has already confirmed the lapse, so going offline after the app has seen the lapse doesn't bring access back. A refund or revocation the app has seen always wins, even during grace. |
 | `MonotonicTimeGuard` | Stops the user stretching the grace or the session budget by setting the device clock back. `reanchor(to:)` takes a trusted *current* time (the `Date` header of a fresh server response) to recover after the clock was set forward. |
 | `DurableOutbox` (actor) | A bounded, coalescing, persisted queue for writes made while sync is down. It applies backpressure (`.rejectedFull`) instead of dropping writes, runs one drain at a time, and is safe under actor reentrancy (see below). It loads the persisted queue before its first write or drain, so a write made at launch cannot overwrite it on disk. Conflicts go to a pluggable `ConflictResolver` (`LastWriterWins` included). |
 | `RecoveryJitter`, `TokenBucket`, `RecoveryGate` | Herd control at recovery. Each install gets a deterministic slot in a 30-minute window from a stable hash of its installation ID and the recovery epoch, then sends through a token bucket that keeps fractional refill. |
@@ -107,13 +108,16 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 - **`LastWriterWins` compares the device clock with the server's.** Clock skew, or a clock set forward, makes local writes win conflicts they shouldn't. Supply your own `ConflictResolver` (for example one using server versions or a hybrid logical clock) if that matters.
 - **A probe whose result is never recorded wedges its breaker.** Record every permit, including on cancellation (`success: false`). There is no probe deadline.
 - **`LastKnownGood` can freeze after the clock is moved forward.** It refuses any fetch stamped earlier than the one it holds, so a single fetch stamped while the clock was ahead blocks updates until real time catches up. Stamp `fetchedAt` with server time.
+- **Refunds issued while the store is unreachable are invisible** until the next successful refresh, so a user refunded during (or just before) an outage keeps access until expiry plus grace.
+- **Don't persist `VerifiedEntitlement` as the source of truth.** It is `Codable` for convenience, but a stored copy can be edited and is no longer verified. Rebuild it from StoreKit's on-device verified transactions on each launch.
+- **Versions are yours to track.** The outbox rebases only entries still pending. Your `SyncTransport` must record each accepted `newVersion` in your model and pass it as `baseVersion` on the next enqueue, or later edits all become conflicts.
 - **Breakers live per process.** An app and its extensions each keep their own. Nothing here coordinates across processes or devices.
 - **The on-device capability set (`InferenceBackend.onDevice`) is an assumption** and a product decision, not a measurement of any model.
 
 ## Install
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.2.2")
+.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.2.3")
 ```
 
 ```swift

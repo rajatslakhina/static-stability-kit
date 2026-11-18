@@ -2,7 +2,8 @@ import Foundation
 
 /// Integer arithmetic that clamps at the type's bounds instead of trapping.
 ///
-/// Every duration and counter in this package goes through these helpers, so no
+/// Every duration, and every counter that is not bounded by construction, goes
+/// through these helpers, so no
 /// value reachable through the public API (a huge grace window, a far-future
 /// instant, a corrupted persisted counter) can crash the app with an overflow trap.
 enum Saturating {

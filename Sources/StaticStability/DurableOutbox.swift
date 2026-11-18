@@ -209,6 +209,12 @@ public struct DrainReport: Sendable, Equatable {
 
 /// A durable, bounded, coalescing outbox for writes made while sync is unavailable.
 ///
+/// Versions are the app's job: when a push is accepted, your `SyncTransport` must
+/// record the returned `newVersion` (and the server's version when a conflict is
+/// resolved for the server) in your model, and pass it as `baseVersion` on the next
+/// `enqueue` for that record. The outbox only rebases entries that are still
+/// pending; a stale `baseVersion` turns every later edit into a conflict.
+///
 /// Invariants (each has a test, and the mutation script checks the tests bite):
 /// - `enqueue` returns `.accepted`/`.coalesced` only after the store saved; if the
 ///   save throws, in-memory state is rolled back and the error rethrown.

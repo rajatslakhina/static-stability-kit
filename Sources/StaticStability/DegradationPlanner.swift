@@ -85,7 +85,7 @@ public enum DegradationPlanner {
         switch decision {
         case .active: return .full
         case .activeUnverified(let age):
-            return .degraded("Signed in on this device; Apple sign-in unreachable for \(minutes(age)).")
+            return .degraded("Signed in on this device; last verified with Apple \(minutes(age)) ago.")
         case .restricted(let age):
             return .degraded("Limited: account not verified for \(minutes(age)). Your data stays available; purchases and account changes are paused.")
         case .signedOut(let reason):
