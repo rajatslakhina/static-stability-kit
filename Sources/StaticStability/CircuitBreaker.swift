@@ -52,6 +52,19 @@ public enum BreakerState: Sendable, Equatable {
     case halfOpen(successes: Int, probeInFlight: Bool)
 }
 
+/// Proof that a ``CircuitBreaker`` admitted one request. Pass it back to
+/// ``CircuitBreaker/record(_:success:at:)`` when the request finishes.
+///
+/// The permit carries the breaker's epoch, which changes on every trip and every
+/// move to half-open. A result that comes back under an older epoch (for example a
+/// request sent before the trip that times out after the cooldown) is ignored, so it
+/// can never be mistaken for the half-open probe's result.
+public struct BreakerPermit: Sendable, Equatable {
+    public let epoch: UInt64
+    /// `true` when this request is the half-open probe.
+    public let isProbe: Bool
+}
+
 /// What the rest of the app should assume about a dependency right now.
 public enum DependencyAvailability: Sendable, Equatable {
     case available
@@ -65,6 +78,11 @@ public enum DependencyAvailability: Sendable, Equatable {
 /// A per-dependency circuit breaker driven by a failure *rate* over a window of
 /// recent outcomes, with exponential, jittered cooldown and single-probe half-open.
 ///
+/// Use ``requestPermit(at:)`` and ``record(_:success:at:)`` whenever a request can
+/// still be in flight when another one is admitted (any real network call). The
+/// Bool pair ``permitsRequest(at:)`` / ``record(success:at:)`` is for callers that
+/// record each outcome before admitting the next request, like the replay harness.
+///
 /// It is a value type with no clock and no locks: callers own it (inside an actor
 /// or a single-threaded simulation) and pass `now` in. That keeps every transition
 /// deterministic and testable, and keeps the breaker usable from the replay harness
@@ -77,6 +95,8 @@ public struct CircuitBreaker: Sendable, Equatable {
     /// Total transitions from not-closed back to closed. The replay uses it as the
     /// recovery epoch so each recovery spreads clients differently.
     public private(set) var recoveries = 0
+    /// Changes on every trip and every move to half-open; see ``BreakerPermit``.
+    public private(set) var epoch: UInt64 = 0
     private var window: OutcomeWindow
     private let jitterSeed: UInt64
 
@@ -86,8 +106,32 @@ public struct CircuitBreaker: Sendable, Equatable {
         self.jitterSeed = jitterSeed
     }
 
-    /// Asks to send one request. Moves `open` to `halfOpen` once the cooldown has
-    /// passed, and in `halfOpen` admits exactly one probe until its outcome is recorded.
+    /// Asks to send one request. Returns `nil` when the breaker refuses it locally.
+    /// Moves `open` to `halfOpen` once the cooldown has passed, and in `halfOpen`
+    /// admits exactly one probe until its outcome is recorded.
+    public mutating func requestPermit(at now: Instant) -> BreakerPermit? {
+        guard permitsRequest(at: now) else { return nil }
+        if case .halfOpen = state { return BreakerPermit(epoch: epoch, isProbe: true) }
+        return BreakerPermit(epoch: epoch, isProbe: false)
+    }
+
+    /// Records the outcome of the request `permit` admitted. Results from an earlier
+    /// epoch, or that don't match the current state (a normal request's result
+    /// arriving while half-open), are ignored. Returns `true` when this outcome closed
+    /// a breaker that was not closed.
+    @discardableResult
+    public mutating func record(_ permit: BreakerPermit, success: Bool, at now: Instant) -> Bool {
+        guard permit.epoch == epoch else { return false }
+        switch state {
+        case .closed where !permit.isProbe, .halfOpen where permit.isProbe:
+            return record(success: success, at: now)
+        default:
+            return false
+        }
+    }
+
+    /// The Bool form of ``requestPermit(at:)``, for callers that record every
+    /// outcome before admitting the next request.
     public mutating func permitsRequest(at now: Instant) -> Bool {
         switch state {
         case .closed:
@@ -95,6 +139,7 @@ public struct CircuitBreaker: Sendable, Equatable {
         case .open(let until):
             guard now >= until else { return false }
             state = .halfOpen(successes: 0, probeInFlight: true)
+            epoch &+= 1
             return true
         case .halfOpen(let successes, let probeInFlight):
             guard !probeInFlight else { return false }
@@ -104,7 +149,8 @@ public struct CircuitBreaker: Sendable, Equatable {
     }
 
     /// Records the outcome of a request that ``permitsRequest(at:)`` admitted.
-    /// Returns `true` when this outcome closed a breaker that was not closed.
+    /// Returns `true` when this outcome closed a breaker that was not closed. In
+    /// half-open, an outcome is counted only while a probe is in flight.
     @discardableResult
     public mutating func record(success: Bool, at now: Instant) -> Bool {
         switch state {
@@ -116,7 +162,9 @@ public struct CircuitBreaker: Sendable, Equatable {
             // A late result from a request sent before the trip. It says nothing
             // about the dependency's health now, so it is ignored.
             return false
-        case .halfOpen(let successes, _):
+        case .halfOpen(let successes, let probeInFlight):
+            // No probe out: this result was not admitted by the half-open state.
+            guard probeInFlight else { return false }
             guard success else {
                 trip(at: now)
                 return false
@@ -161,6 +209,7 @@ public struct CircuitBreaker: Sendable, Equatable {
         // draw ≤ cooldownJitterMillis < Int64.max, so the conversion is exact.
         let jitter = Int64(draw)
         state = .open(until: now.advanced(byMillis: Saturating.add(doubled, jitter)))
+        epoch &+= 1
         window.reset()
     }
 }

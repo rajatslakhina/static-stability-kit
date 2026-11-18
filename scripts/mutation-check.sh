@@ -11,6 +11,9 @@ S=Sources/StaticStability
 MUTANTS=(
   "$S/CircuitBreaker.swift|guard count >= policy.minimumSamples, count > 0 else|guard count > 0 else|one failed request does not trip the breaker"
   "$S/CircuitBreaker.swift|guard !probeInFlight else { return false }|_ = probeInFlight|half-open admits exactly one probe at a time"
+  "$S/CircuitBreaker.swift|guard permit.epoch == epoch else { return false }|_ = permit.epoch|a result from an earlier epoch cannot pose as the current probe"
+  "$S/CircuitBreaker.swift|case .closed where !permit.isProbe, .halfOpen where permit.isProbe:|case .closed, .halfOpen:|a pre-trip request's late result is not counted as the probe"
+  "$S/CircuitBreaker.swift|            guard probeInFlight else { return false }|            _ = probeInFlight|half-open counts an outcome only while a probe is in flight"
   "$S/CircuitBreaker.swift|times: consecutiveTrips - 1,|times: 0,|cooldown doubles on each consecutive trip"
   "$S/CircuitBreaker.swift|let jitter = Int64(draw)|let jitter = Int64(draw) * 0|clients that trip together do not reopen in lockstep"
   "$S/CircuitBreaker.swift|        if slots[oldest] { failures -= 1 }|        // (aging removed)|old outcomes age out of the window"
@@ -51,6 +54,7 @@ MUTANTS=(
   "$S/RecoveryGate.swift|        guard now > lastRefill else { return }|        guard now != lastRefill else { return }|a clock moved backwards earns no tokens"
   '$S/CapabilityRouter.swift|let lost = task.preferred.subtracting(chosen.capabilities).sorted()|let lost: [AICapability] = []|a fallback route says what it lost'
   '$S/CapabilityRouter.swift|guard let chosen = live.first(where: { task.required.isSubset(of: $0.capabilities) }) else {|guard let chosen = live.first else {|a task is never routed to a model that lacks a required capability'
+  "$S/Time.swift|        highWater = trusted|        _ = trusted|reanchor recovers from a clock set forward and back"
   "$S/Time.swift|        return mark|        return wallClock|setting the clock back cannot stretch time-based budgets"
   "$S/Time.swift|        return (a < 0) == (b < 0) ? .max : .min|        return result|arithmetic saturates instead of wrapping"
 )

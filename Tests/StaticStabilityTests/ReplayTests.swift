@@ -112,6 +112,17 @@ final class ReplayTests: XCTestCase {
         let ungated = OutageReplay.run(.apple17Nov2026, architecture: .staticallyStable,
                                        config: ReplayConfig(recoveryWindowMinutes: 0, pushesPerMinute: 10_000, pushBurst: 10_000))
         XCTAssertGreaterThan(ungated.peakSyncRequestsPerMinute, stable.peakSyncRequestsPerMinute * 2)
+        // Golden values quoted in the README's recovery-gate trade-off.
+        XCTAssertEqual(ungated.peakSyncRequestsPerMinute, 690)
+        XCTAssertEqual(ungated.maxUnsyncedWriteAgeMinutes, 206)
+        XCTAssertEqual(stable.maxUnsyncedWriteAgeMinutes, 225)
+    }
+
+    func testNaiveOldestWriteWithoutProcessKills() {
+        // The README notes the naive 182 would be 195 if the process were never killed.
+        let neverKilled = OutageReplay.run(.apple17Nov2026, architecture: .naive, config: ReplayConfig(terminationPercent: 0))
+        XCTAssertEqual(neverKilled.writesLost, 0)
+        XCTAssertEqual(neverKilled.maxUnsyncedWriteAgeMinutes, 195)
     }
 
     func testATinyOutboxBackpressuresInsteadOfLosingWrites() throws {

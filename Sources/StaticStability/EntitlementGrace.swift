@@ -15,6 +15,11 @@ public struct VerifiedEntitlement: Sendable, Codable, Equatable {
     /// (not when the purchase was first verified). Update it on every successful
     /// refresh, including one that returns the same transaction: it is how the
     /// policy tells a renewal it has not seen yet from a lapse it has already seen.
+    /// That includes a refresh that returns *no* transaction for this product:
+    /// StoreKit's `Transaction.currentEntitlements` omits expired subscriptions, so
+    /// an adapter that only updates this field when a transaction comes back would
+    /// keep a stale `verifiedAt` and re-open the grace. Bump it (or drop the
+    /// entitlement) on every successful refresh.
     public let verifiedAt: Instant
 
     public init(productID: String, expiresAt: Instant?, revokedAt: Instant? = nil, verifiedAt: Instant) {

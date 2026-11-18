@@ -95,6 +95,68 @@ final class CircuitBreakerTests: XCTestCase {
         XCTAssertEqual(cooldowns, [30_000, 60_000, 120_000, 240_000, 240_000, 240_000])
     }
 
+    func testStalePermitFromBeforeTheTripCannotPoseAsTheProbe() {
+        var breaker = CircuitBreaker(policy: policy)
+        // A slow request admitted while closed...
+        guard let slow = breaker.requestPermit(at: .minute(0)) else { return XCTFail("closed admits") }
+        XCTAssertFalse(slow.isProbe)
+        // ...the breaker trips on other traffic...
+        for _ in 0..<5 {
+            guard let p = breaker.requestPermit(at: .minute(0)) else { return XCTFail() }
+            breaker.record(p, success: false, at: .minute(0))
+        }
+        // ...and after the cooldown one probe goes out.
+        let afterCooldown = Instant.minute(1)
+        guard let probe = breaker.requestPermit(at: afterCooldown) else { return XCTFail("probe admitted") }
+        XCTAssertTrue(probe.isProbe)
+        // The slow pre-trip request finally succeeds: it must not count as the probe.
+        XCTAssertFalse(breaker.record(slow, success: true, at: afterCooldown))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 0, probeInFlight: true))
+        XCTAssertNil(breaker.requestPermit(at: afterCooldown), "still one probe at a time")
+        // The real probe's result is what counts.
+        breaker.record(probe, success: true, at: afterCooldown)
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: false))
+    }
+
+    func testProbePermitAfterTheBreakerClosedIsIgnored() {
+        var breaker = CircuitBreaker(policy: BreakerPolicy(windowSize: 1, minimumSamples: 1, failureThresholdPercent: 100,
+                                                           baseCooldownMillis: 0, maxCooldownMillis: 0,
+                                                           cooldownJitterMillis: 0, halfOpenSuccessesToClose: 1))
+        guard let first = breaker.requestPermit(at: .minute(0)) else { return XCTFail() }
+        breaker.record(first, success: false, at: .minute(0))
+        guard let probe = breaker.requestPermit(at: .minute(0)) else { return XCTFail() }
+        XCTAssertTrue(breaker.record(probe, success: true, at: .minute(0)), "probe closes the breaker")
+        XCTAssertEqual(breaker.state, .closed)
+        // The same probe permit recorded again (a duplicate callback) changes nothing.
+        let before = breaker
+        XCTAssertFalse(breaker.record(probe, success: false, at: .minute(0)))
+        XCTAssertEqual(breaker, before)
+    }
+
+    func testDuplicateResultFromAnEarlierProbeIsIgnoredByTheNextProbe() {
+        var breaker = CircuitBreaker(policy: policy)
+        feed(&breaker, Array(repeating: false, count: 5))
+        guard let firstProbe = breaker.requestPermit(at: .minute(1)) else { return XCTFail() }
+        breaker.record(firstProbe, success: false, at: .minute(1))   // re-trips, 60 s cooldown
+        guard let secondProbe = breaker.requestPermit(at: .minute(3)) else { return XCTFail() }
+        // The first probe's callback fires again (a retry layer, a duplicate delegate call).
+        XCTAssertFalse(breaker.record(firstProbe, success: true, at: .minute(3)))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 0, probeInFlight: true))
+        breaker.record(secondProbe, success: true, at: .minute(3))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: false))
+    }
+
+    func testHalfOpenIgnoresBoolRecordWhenNoProbeIsInFlight() {
+        var breaker = CircuitBreaker(policy: policy)
+        feed(&breaker, Array(repeating: false, count: 5))
+        XCTAssertTrue(breaker.permitsRequest(at: .minute(1)))
+        breaker.record(success: true, at: .minute(1))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: false))
+        // A stray result with no probe out must not be counted as the second success.
+        XCTAssertFalse(breaker.record(success: true, at: .minute(1)))
+        XCTAssertEqual(breaker.state, .halfOpen(successes: 1, probeInFlight: false))
+    }
+
     func testLateOutcomeWhileOpenIsIgnored() {
         var breaker = CircuitBreaker(policy: policy)
         feed(&breaker, Array(repeating: false, count: 5))

@@ -108,8 +108,10 @@ extension RecoveryJitter {
         var counts = [Int](repeating: 0, count: buckets)
         for delay in delays {
             guard delay >= 0, delay < windowMillis else { return false }
-            // delay < windowMillis, so the slice index is in 0..<buckets.
-            let slice = Int(Saturating.multiply(delay, Int64(buckets)) / windowMillis)
+            // delay * buckets in 128 bits, divided by the window: the quotient is
+            // below `buckets` because delay < windowMillis, so it fits and cannot trap.
+            let product = delay.multipliedFullWidth(by: Int64(buckets))
+            let slice = Int(windowMillis.dividingFullWidth(product).quotient)
             guard counts.indices.contains(slice) else { return false }
             counts[slice] += 1
         }

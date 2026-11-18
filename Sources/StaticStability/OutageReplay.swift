@@ -23,7 +23,9 @@ public struct OutageScenario: Sendable, Equatable, Identifiable {
         self.id = id
         self.title = title
         self.summary = summary
-        self.durationMinutes = min(max(durationMinutes, 1), 7 * 24 * 60)
+        // One day at most: a replay allocates per-minute arrays and steps every client
+        // every minute, so the bounds keep a hostile scenario from exhausting memory.
+        self.durationMinutes = min(max(durationMinutes, 1), 24 * 60)
         self.windows = windows
     }
 
@@ -88,7 +90,8 @@ public enum ReplayArchitecture: String, Sendable, CaseIterable, Identifiable {
 }
 
 /// Population and policy parameters for a replay. Clamped so no setting can make
-/// the simulation trap or run unboundedly.
+/// the simulation trap; the largest allowed replay (5,000 clients, 1,440 minutes)
+/// takes seconds on a laptop, so on a phone keep runs near the defaults.
 public struct ReplayConfig: Sendable, Equatable {
     public let clients: Int
     public let seed: UInt64
@@ -141,7 +144,9 @@ public struct ReplayConfig: Sendable, Equatable {
         )
     ) {
         func percent(_ value: Int) -> Int { min(max(value, 0), 100) }
-        self.clients = min(max(clients, 1), 20_000)
+        // 5,000 clients × 1,440 minutes is the largest replay: bounded in time and
+        // memory even for the naive design's unbounded per-client queue.
+        self.clients = min(max(clients, 1), 5_000)
         self.seed = seed
         self.activePercent = percent(activePercent)
         self.writePercent = percent(writePercent)

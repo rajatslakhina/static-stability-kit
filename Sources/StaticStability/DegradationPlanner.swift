@@ -66,6 +66,10 @@ public struct PostureInputs: Sendable {
 }
 
 /// Maps each dependency's local decision to a user-visible feature status.
+///
+/// The text describes behaviour the app must actually implement. For example,
+/// "purchases and account changes are paused" in the restricted-session status is
+/// only true if the app blocks those actions; the library doesn't enforce it.
 public enum DegradationPlanner {
     public static func posture(_ inputs: PostureInputs) -> [FeatureStatus] {
         [

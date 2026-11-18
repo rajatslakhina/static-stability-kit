@@ -109,15 +109,26 @@ public struct Instant: Comparable, Hashable, Sendable, Codable, CustomStringConv
 /// outage grace indefinitely. The guard persists the latest instant it has seen and
 /// never reports anything earlier.
 ///
-/// What it does not catch: a clock moved *forward* and then back to the true time
-/// (the high-water mark stays in the future until real time catches up, which errs
-/// towards expiring grace early, never late), or a fresh install that has never seen
-/// a trustworthy time.
+/// What it does not catch, and what it costs:
+/// - A clock moved *forward* and then back leaves the high-water mark in the
+///   future until real time catches up. Until then every time-based policy sees the
+///   future: a verified, unexpired subscription can be denied as expired, and a
+///   session can turn `.restricted`. Call ``reanchor(to:)`` with a trusted time
+///   (for example a server timestamp or a signed transaction date) to recover.
+/// - A fresh install has no high-water mark, so it trusts the first time it sees.
 public struct MonotonicTimeGuard: Sendable, Codable, Equatable {
     public private(set) var highWater: Instant?
 
     public init(highWater: Instant? = nil) {
         self.highWater = highWater
+    }
+
+    /// Replaces the high-water mark with a time the app trusts more than the device
+    /// clock (a server timestamp, a signed transaction date). This is the only way
+    /// to move the mark backwards, and so the way to recover after the device clock
+    /// was set forward and back.
+    public mutating func reanchor(to trusted: Instant) {
+        highWater = trusted
     }
 
     /// Records `wallClock` and returns the effective instant: the later of the two.

@@ -2,7 +2,7 @@
 
 **Your iOS app shouldn't go down because Apple did.**
 
-On 17 November 2026, an Apple "internal update" took down Apple Account sign-in, Sign in with Apple, the App Store and iCloud together for hours ([MacRumors](https://www.macrumors.com/2026/11/17/apple-is-down-in-a-big-way-today/), [Apple's explanation](https://www.macrumors.com/2026/11/17/apple-outage-internal-update/)). In plenty of apps that meant users were signed out, subscribers lost features they had paid for, and edits made during the outage were gone.
+On 17 November 2026, an Apple "internal update" took down Apple Account sign-in, Sign in with Apple, the App Store and iCloud together for hours ([MacRumors](https://www.macrumors.com/2026/11/17/apple-is-down-in-a-big-way-today/), [Apple's explanation](https://www.macrumors.com/2026/11/17/apple-outage-internal-update/)). For an app built on the usual per-dependency policies, an outage like that means users signed out, subscribers losing features they paid for, and edits made during the outage gone. The replay below measures exactly that.
 
 This package is the client-side resilience layer that stops those things from happening. It makes an app **statically stable**: every decision the app makes about its users during an outage comes from state it already holds locally, so losing a dependency degrades a feature instead of breaking it. It ships with a deterministic fault-injection replay that runs the 17 November outage over 1,000 simulated clients and measures what users actually experienced.
 
@@ -49,15 +49,15 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 
 | Type | Problem it solves |
 |---|---|
-| `CircuitBreaker`, `BreakerPolicy` | Stops sending requests to a dependency that is down. It trips on a failure *rate* over a window, with a minimum sample count, so one bad request is noise rather than an outage. The cooldown is exponential and jittered per client, and half-open lets exactly one probe through at a time. |
+| `CircuitBreaker`, `BreakerPolicy` | Stops sending requests to a dependency that is down. It trips on a failure *rate* over a window, with a minimum sample count, so one bad request is noise rather than an outage. The cooldown is exponential and jittered per client, and half-open lets exactly one probe through at a time. Each admitted request gets a `BreakerPermit` carrying the breaker's epoch, so a slow request sent before the trip can't come back after the cooldown and pose as the probe. |
 | `SessionContinuity` | Tells "the provider said no" (`.revoked`, `.notFound`: sign out) apart from "the provider did not answer" (carry on). After a 7-day unverified budget the session becomes `.restricted`: the user keeps their data and sensitive actions are paused (the app enforces which). It is never signed out. |
-| `EntitlementPolicy`, `VerifiedEntitlement` | Grants access from locally verified transactions. Past expiry, it grants a bounded grace (48 h by default) only while the store is unreachable, and only if no successful refresh has already confirmed the lapse, so going offline after a cancellation doesn't bring access back. A refund or revocation always wins. |
-| `MonotonicTimeGuard` | Stops the user stretching the grace or the session budget by setting the device clock back. |
+| `EntitlementPolicy`, `VerifiedEntitlement` | Grants access from locally verified transactions. Past expiry, it grants a bounded grace (48 h by default) only while the store is unreachable, and only if no successful refresh has already confirmed the lapse, so going offline after the app has seen the lapse doesn't bring access back. A refund or revocation always wins. |
+| `MonotonicTimeGuard` | Stops the user stretching the grace or the session budget by setting the device clock back. `reanchor(to:)` takes a trusted time (a server timestamp, a signed transaction date) to recover after the clock was set forward. |
 | `DurableOutbox` (actor) | A bounded, coalescing, persisted queue for writes made while sync is down. It applies backpressure (`.rejectedFull`) instead of dropping writes, runs one drain at a time, and is safe under actor reentrancy (see below). It loads the persisted queue before its first write or drain, so a write made at launch cannot overwrite it on disk. Conflicts go to a pluggable `ConflictResolver` (`LastWriterWins` included). |
 | `RecoveryJitter`, `TokenBucket`, `RecoveryGate` | Herd control at recovery. Each install gets a deterministic slot in a 30-minute window from a stable hash of its installation ID and the recovery epoch, then sends through a token bucket that keeps fractional refill. |
 | `LastKnownGood` | Remote config that serves the last validated value for as long as the config service is down, by default with no time limit. It refuses an invalid push and refuses an out-of-order response that would roll config back. |
 | `CapabilityRouter`, `AITask`, `AIRoute` | Fails over from the cloud model to the on-device model and says exactly which capabilities were lost, so the UI can label a reduced answer. A task that needs a capability only the cloud has comes back `.unavailable`. It is never silently sent to a weaker model. |
-| `DegradationPlanner` | Turns the decisions above into one status per feature, with user-facing text. |
+| `DegradationPlanner` | Turns the decisions above into one status per feature, with user-facing text. The text describes behaviour the app has to implement (for example, pausing purchases in a restricted session); the planner doesn't enforce it. |
 | `OutageReplay`, `OutageScenario`, `ReplayReport` | The fault-injection harness: a minute-by-minute replay over a simulated fleet, comparing the naive policies above with this package. |
 
 ## Design decisions and trade-offs
@@ -78,16 +78,16 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 
 **A transient failure stops the drain.** If the dependency just failed, pushing the rest of the queue only adds load. Records rebased after a conflict are parked until the next pass, so a server that always answers "conflict" cannot spin the drain.
 
-**The recovery gate fixes the peak by policy rather than by backlog.** After recovery, each client waits for its slot and then sends at most `pushesPerMinute`. Fleet peak is then roughly active clients × rate, whatever the size of the backlog. *Trade-off:* the backlog drains more slowly, which is why the oldest unsynced write waited 225 minutes instead of 182. The naive figure looks better only because the naive client lost its oldest writes when its process was killed.
+**The recovery gate fixes the peak by policy rather than by backlog.** After recovery, each client waits for its slot and then sends at most `pushesPerMinute`. Fleet peak is then roughly active clients × rate, whatever the size of the backlog. *Trade-off:* recovery traffic is held back. The stable client waits out its breaker cooldown (up to 16 minutes plus jitter in the replay's configuration) and its jittered recovery slot (up to 30 minutes), then drains at a limited rate, which is why the oldest unsynced write waited 225 minutes against the naive 182. A one-off run with the gate removed gives 206 minutes, but a sync peak of 690 requests a minute instead of 336. The naive figure would be 195 if its process were never killed (its in-memory queue loses some of its oldest writes).
 
 **AI degradation is explicit.** `AIRoute.reduced` carries the lost capabilities and a notice. A summary without web sources that is labelled as such beats one that is quietly worse.
 
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors (Swift 6.4.2, Xcode 27.2, Swift 6 language mode).
-- `swift test`: **102 XCTest tests, 0 failures** on macOS. The suite covers trapping-arithmetic edges (`Int64.max` instants, `.max` grace, hostile breaker and replay config), empty and boundary states, breaker cooldown sequences, clock rollback, the outbox reentrancy interleaving (on the success, conflict, transient and permanent-failure paths), concurrent drains, re-grant prevention, save-failure rollback, dead-letter bounds, token-bucket remainder carry, jitter uniformity, and replay invariants (every write accounted for, identical workloads, golden values recorded from an earlier process).
-- **Tests that would fail against a broken implementation.** `scripts/mutation-check.sh` re-introduces 33 specific bugs, one per claim in this README (single-error tripping, removing the reentrancy check, discarding the token-bucket remainder, a constant jitter, and so on), and requires each one to fail the suite. The uniformity check is itself tested against a constant spread and a half-window spread, both of which it must reject. Result: **33/33 caught**.
-- CI ([Actions](https://github.com/rajatslakhina/static-stability-kit/actions)): a Linux job (`swift:6.0`, warnings as errors, full test suite), a macOS job (tests plus a generic iOS Simulator build of the library), and the mutation check.
+- `swift test`: **108 XCTest tests, 0 failures** on macOS. The suite covers trapping-arithmetic edges (`Int64.max` instants, `.max` grace, hostile breaker and replay config), empty and boundary states, breaker cooldown sequences, stale and duplicate permits in half-open, clock rollback and re-anchoring, the outbox reentrancy interleaving (on the success, conflict, transient and permanent-failure paths), concurrent drains, re-grant prevention, save-failure rollback, dead-letter bounds, token-bucket remainder carry, jitter uniformity, and replay invariants (every write accounted for, identical workloads, golden values recorded from an earlier process).
+- **Tests that would fail against a broken implementation.** `scripts/mutation-check.sh` re-introduces 37 specific bugs, one per claim in this README (single-error tripping, removing the reentrancy check, discarding the token-bucket remainder, a constant jitter, and so on), and requires each one to fail the suite. The uniformity check is itself tested against a constant spread and a half-window spread, both of which it must reject. Result: **37/37 caught**.
+- CI ([Actions](https://github.com/rajatslakhina/static-stability-kit/actions)): a Linux job (`swift:6.0`, warnings as errors, full test suite), a macOS job on the `macos-15` runner, which uses Xcode 16.4 (tests plus a generic iOS Simulator build of the library), and the mutation check.
 
 ## Honest limits
 
@@ -101,7 +101,10 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 - **An undecodable persisted queue blocks the outbox.** `drain` reports `.restoreFailed` and `enqueue` throws until the app calls `resetDiscardingPendingWrites()`, which deliberately drops the queued writes. There is no partial recovery.
 - **Revocation is invisible while the identity provider is unreachable.** A revoked Apple ID stays `.activeUnverified` for the 7-day budget and then `.restricted` (data still available) until a check gets through, including when the user blocks the provider. Gate truly sensitive actions on a server-side token check as well.
 - **Grace can't confirm a lapse the app never saw.** A cancelled user who doesn't open the app between their expiry and the outage gets the grace, because nothing distinguishes them from a renewing user. Those minutes are what `falseGrantUserMinutes` counts.
-- **`MonotonicTimeGuard` only defends against the clock moving backwards.** A fresh install has no high-water mark, and a clock moved forward and then back errs towards ending grace early.
+- **`MonotonicTimeGuard` only defends against the clock moving backwards, and a clock moved forward hurts.** After the device clock is set forward and back, the high-water mark stays in the future until real time catches up. Until then a verified, unexpired subscription can be denied as expired and a session can turn `.restricted`. Call `reanchor(to:)` with a trusted time to recover. A fresh install has no high-water mark at all.
+- **A user who blocks the store before their expiry gets the grace.** Cancelling and then blocking StoreKit's hosts (or going offline) before the expiry leaves `verifiedAt < expiresAt`, so the policy grants up to `outageGraceMillis` of extra access, once per lapse.
+- **Sync delivery is at least once.** A crash between the server accepting a write and the local save re-pushes the same `writeID`, so the server must deduplicate on it.
+- **`LastWriterWins` compares the device clock with the server's.** Clock skew, or a clock set forward, makes local writes win conflicts they shouldn't. Supply your own `ConflictResolver` (for example one using server versions or a hybrid logical clock) if that matters.
 - **Breakers live per process.** An app and its extensions each keep their own. Nothing here coordinates across processes or devices.
 - **The on-device capability set (`InferenceBackend.onDevice`) is an assumption** and a product decision, not a measurement of any model.
 
@@ -120,10 +123,11 @@ var clock = MonotonicTimeGuard()
 
 let now = clock.observe(Instant(Date()))
 let decision: SessionDecision
-if identity.permitsRequest(at: now) {
+if let permit = identity.requestPermit(at: now) {
     let state = await credentialState()          // your getCredentialState wrapper
-    identity.record(success: state != .unavailable, at: now)
-    decision = session.evaluate(state, at: now)
+    let finished = clock.observe(Instant(Date()))
+    identity.record(permit, success: state != .unavailable, at: finished)
+    decision = session.evaluate(state, at: finished)
 } else {
     decision = session.decisionWithoutProvider(at: now)
 }

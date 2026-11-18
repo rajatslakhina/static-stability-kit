@@ -63,6 +63,14 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(guardrail.highWater, .minute(130))
     }
 
+    func testReanchorRecoversFromAClockSetForwardAndBack() {
+        var guardrail = MonotonicTimeGuard()
+        _ = guardrail.observe(.minute(525_600))  // clock set a year ahead
+        XCTAssertEqual(guardrail.observe(.minute(10)), .minute(525_600), "stuck in the future")
+        guardrail.reanchor(to: .minute(10))       // e.g. a server timestamp
+        XCTAssertEqual(guardrail.observe(.minute(11)), .minute(11))
+    }
+
     func testFNV1aMatchesPublishedVectors() {
         // Reference values for 64-bit FNV-1a. A process-seeded hash (Hasher) would
         // produce different values on every run and fail here.

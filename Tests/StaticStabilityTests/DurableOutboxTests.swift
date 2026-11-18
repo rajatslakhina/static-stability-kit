@@ -169,9 +169,9 @@ final class DurableOutboxTests: XCTestCase {
         XCTAssertEqual(report.status, .budgetExhausted)
         XCTAssertEqual(report.pushed, 2)
         XCTAssertEqual(report.remaining, 1)
-        let none = await outbox.drain(via: ScriptedTransport([]), maxPushes: -3)
-        XCTAssertEqual(none.pushed, 0)
-        XCTAssertEqual(none.remaining, 1)
+        let noPushes = await outbox.drain(via: ScriptedTransport([]), maxPushes: -3)
+        XCTAssertEqual(noPushes.pushed, 0)
+        XCTAssertEqual(noPushes.remaining, 1)
     }
 
     func testTransientFailureStopsTheDrainAndKeepsTheWrite() async throws {

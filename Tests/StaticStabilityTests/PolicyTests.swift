@@ -204,8 +204,8 @@ final class CapabilityRouterTests: XCTestCase {
         XCTAssertEqual(missing, [])
         XCTAssertEqual(notice, "Cite needs extraction, web grounding together, and no single available model provides all of them.")
         let empty = AITask(name: "Noop", required: [])
-        guard case .unavailable(_, let none) = router.route(empty, isAvailable: { _ in false }) else { return XCTFail() }
-        XCTAssertEqual(none, "Noop has no model available right now.")
+        guard case .unavailable(_, let emptyNotice) = router.route(empty, isAvailable: { _ in false }) else { return XCTFail() }
+        XCTAssertEqual(emptyNotice, "Noop has no model available right now.")
     }
 
     func testNothingAvailableListsEveryRequiredCapability() {
@@ -214,7 +214,7 @@ final class CapabilityRouterTests: XCTestCase {
         XCTAssertEqual(missing, [.extraction, .webGrounding])
     }
 
-    func testPreferredOverlappingRequiredIsNotReportedAsLost() {
+    func testPreferredExcludesRequiredCapabilities() {
         let task = AITask(name: "T", required: [.shortRewrite], preferred: [.shortRewrite, .toolUse])
         XCTAssertEqual(task.preferred, [.toolUse])
     }
