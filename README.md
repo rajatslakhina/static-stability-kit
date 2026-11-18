@@ -74,7 +74,7 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 
 **The outbox persists synchronously inside the actor.** `enqueue` returns `.accepted` only after the store has saved (for `FileOutboxStore`, an atomic write-and-rename: it survives an app crash, but without an explicit fsync it is not guaranteed through a power loss), and it never suspends between changing state and saving, so two interleaved enqueues cannot save their snapshots out of order. *Trade-off:* a slow disk blocks the actor for one small write. That is acceptable for a queue bounded at a few hundred entries. *Rejected:* an `async` store, which reintroduces the ordering problem and needs a generation counter to fix it.
 
-**Actor reentrancy is handled by write identity, not by locking.** The drain suspends at `await transport.push`. While it is suspended, a newer edit to the same record can coalesce into the pending entry, and then the push of the *old* content succeeds. Removing the entry by record key at that point silently drops the user's latest edit. Every coalesce assigns a fresh `writeID`, and after resuming, the drain removes the entry only if the ID is unchanged. Otherwise it rebases the newer write onto the version just created. `testWriteDuringInFlightPushIsNotLost` reproduces the interleaving through a transport that re-enters the outbox mid-push.
+**Actor reentrancy is handled by write identity, not by locking.** The drain suspends at `await transport.push`. While it is suspended, a newer edit to the same record can coalesce into the pending entry, and then the push of the *old* content succeeds. Removing the entry by record key at that point silently drops the user's latest edit. Every coalesce assigns a fresh `writeID`, and after resuming, the drain removes the entry only if the ID is unchanged. Otherwise it rebases the newer write onto the version just created. If the server answers with a conflict instead, the resolver judges the newest local content, not the content that was in flight, so the user's latest edit is kept or discarded on its own merits. `testWriteDuringInFlightPushIsNotLost` reproduces the interleaving through a transport that re-enters the outbox mid-push.
 
 **A transient failure stops the drain.** If the dependency just failed, pushing the rest of the queue only adds load. Records rebased after a conflict are parked until the next pass, so a server that always answers "conflict" cannot spin the drain.
 
@@ -85,7 +85,7 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 ## Verification
 
 - `swift build -Xswiftc -warnings-as-errors` from a clean `.build`: 0 warnings, 0 errors (Swift 6.4.2, Xcode 27.2, Swift 6 language mode).
-- `swift test`: **111 XCTest tests, 0 failures** on macOS. The suite covers trapping-arithmetic edges (`Int64.max` instants, `.max` grace, hostile breaker and replay config), empty and boundary states, breaker cooldown sequences, stale and duplicate permits in half-open, clock rollback and re-anchoring, the outbox reentrancy interleaving (on the success, conflict, transient and permanent-failure paths), concurrent drains, re-grant prevention, save-failure rollback, dead-letter bounds, token-bucket remainder carry, jitter uniformity, and replay invariants (every write accounted for, identical workloads, golden values recorded from an earlier process).
+- `swift test`: **112 XCTest tests, 0 failures** on macOS. The suite covers trapping-arithmetic edges (`Int64.max` instants, `.max` grace, hostile breaker and replay config), empty and boundary states, breaker cooldown sequences, stale and duplicate permits in half-open, clock rollback and re-anchoring, the outbox reentrancy interleaving (on the success, conflict, transient and permanent-failure paths), concurrent drains, re-grant prevention, save-failure rollback, dead-letter bounds, token-bucket remainder carry, jitter uniformity, and replay invariants (every write accounted for, identical workloads, golden values recorded from an earlier process).
 - **Tests that would fail against a broken implementation.** `scripts/mutation-check.sh` re-introduces 38 specific bugs, one per claim in this README (single-error tripping, removing the reentrancy check, discarding the token-bucket remainder, a constant jitter, and so on), and requires each one to fail the suite. The uniformity check is itself tested against a constant spread and a half-window spread, both of which it must reject. Result: **38/38 caught**.
 - CI ([Actions](https://github.com/rajatslakhina/static-stability-kit/actions)): a Linux job (`swift:6.0`, warnings as errors, full test suite), a macOS job on the `macos-15` runner, which uses Xcode 16.4 (tests plus a generic iOS Simulator build of the library), and the mutation check.
 
@@ -113,7 +113,7 @@ Designing for this is an engineering-lead problem rather than a feature problem.
 ## Install
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.2.1")
+.package(url: "https://github.com/rajatslakhina/static-stability-kit.git", from: "1.2.2")
 ```
 
 ```swift

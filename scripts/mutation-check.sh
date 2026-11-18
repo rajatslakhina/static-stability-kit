@@ -38,7 +38,7 @@ MUTANTS=(
                     report.pushed += 1|                if true {
                     entries.remove(at: index)
                     report.pushed += 1|a write that lands mid-push is not lost (actor reentrancy)"
-  "$S/DurableOutbox.swift|if unchanged, resolver.resolve(local: entries[index], remote: remote) == .keepRemote {|if resolver.resolve(local: entries[index], remote: remote) == .keepRemote {|a write that lands mid-push survives a conflict"
+  "$S/DurableOutbox.swift|if resolver.resolve(local: entries[index], remote: remote) == .keepRemote {|if resolver.resolve(local: sent, remote: remote) == .keepRemote {|a conflict is judged against the newest local content, not the content that was in flight"
   "$S/DurableOutbox.swift|            entries[index].writeID = makeWriteID()|            // writeID kept|coalescing changes the write ID"
   "$S/DurableOutbox.swift|        guard !isDraining else {|        guard true else {|only one drain runs at a time"
   "$S/DurableOutbox.swift|        try restore()

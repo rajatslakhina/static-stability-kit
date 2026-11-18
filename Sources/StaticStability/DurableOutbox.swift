@@ -194,6 +194,9 @@ public struct DrainReport: Sendable, Equatable {
     /// was in flight. The newer write stays pending, rebased onto the new version.
     public internal(set) var supersededInFlight = 0
     public internal(set) var rebasedAfterConflict = 0
+    /// The server refused a push permanently, but newer content for that record had
+    /// arrived while it was in flight. The newer content stays pending.
+    public internal(set) var supersededPermanentFailures = 0
     public internal(set) var discardedForRemote = 0
     public internal(set) var deadLettered = 0
     public internal(set) var transientFailures = 0
@@ -212,8 +215,11 @@ public struct DrainReport: Sendable, Equatable {
 /// - At most `capacity` distinct records are pending; beyond that, `.rejectedFull`.
 /// - Only one drain runs at a time.
 /// - A write that arrives while an older write to the same record is being pushed is
-///   never lost: the actor suspends at `await transport.push`, so after resuming the
-///   drain re-reads the entry and removes it only if its `writeID` is unchanged.
+///   never dropped by accident: the actor suspends at `await transport.push`, so after
+///   resuming the drain re-reads the entry. A success or permanent failure removes it
+///   only if its `writeID` is unchanged. A conflict is judged by the resolver against
+///   the newest content, so it is discarded only if the resolver says the server's
+///   copy wins over that content.
 public actor DurableOutbox {
     // Immutable and Sendable, so readable from any isolation domain without `await`.
     public nonisolated let capacity: Int
@@ -357,12 +363,16 @@ public actor DurableOutbox {
                     report.supersededInFlight += 1
                 }
             case .conflict(let remote):
-                if unchanged, resolver.resolve(local: entries[index], remote: remote) == .keepRemote {
+                // Judge the entry as it is NOW. If a newer local write coalesced in
+                // during the push, the same conflict applies to it (it has the same
+                // base version), so the resolver decides on the newest content rather
+                // than on content the user has already replaced.
+                if resolver.resolve(local: entries[index], remote: remote) == .keepRemote {
                     entries.remove(at: index)
                     report.discardedForRemote += 1
                 } else {
-                    // Either the resolver kept the local write, or a newer local write
-                    // arrived mid-push and has not been judged yet: rebase and retry.
+                    // The resolver kept the local write: rebase onto the server's
+                    // version and push again on the next pass.
                     entries[index].baseVersion = remote.version
                     entries[index].attempts = Saturating.add(entries[index].attempts, 1)
                     parked.insert(sent.recordKey)
@@ -383,6 +393,7 @@ public actor DurableOutbox {
                     // content deserves its own attempt.
                     entries[index].attempts = Saturating.add(entries[index].attempts, 1)
                     parked.insert(sent.recordKey)
+                    report.supersededPermanentFailures += 1
                 }
             }
             do { try store.save(entries) } catch { report.persistenceFailures += 1 }

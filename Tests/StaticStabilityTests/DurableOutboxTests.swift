@@ -216,25 +216,43 @@ final class DurableOutboxTests: XCTestCase {
         transport.outbox = outbox
         let report = await outbox.drain(via: transport, maxPushes: 5)
         XCTAssertEqual(report.deadLettered, 0)
+        XCTAssertEqual(report.supersededPermanentFailures, 1)
         let pending = await outbox.pending
         XCTAssertEqual(pending.first?.payload, bytes("newer"))
     }
 
-    func testConflictOnSupersededContentKeepsTheNewerWrite() async throws {
-        // Same interleaving as above, but the server answers "conflict" and its copy
-        // is newer than the OLD content. The newer local write has not been judged
-        // yet, so it must survive, rebased onto the server version.
+    func testConflictIsJudgedAgainstTheNewerContentWhenTheServerIsOlder() async {
+        // While "old" is in flight, "newer" coalesces in (modified at minute 5). The
+        // server answers "conflict" with a copy from minute 2. Last writer wins judges
+        // the NEWER content (5 > 2): keep it, rebased onto the server version.
+        await assertSupersededConflict(remoteModifiedAtMinute: 2, expectKept: true)
+    }
+
+    func testConflictIsJudgedAgainstTheNewerContentWhenTheServerIsNewer() async {
+        // Same interleaving, server copy from minute 99: the server wins over the
+        // newest local content, so the resolver's decision is honoured.
+        await assertSupersededConflict(remoteModifiedAtMinute: 99, expectKept: false)
+    }
+
+    private func assertSupersededConflict(remoteModifiedAtMinute: Int, expectKept: Bool,
+                                          file: StaticString = #filePath, line: UInt = #line) async {
         let outbox = makeOutbox()
-        _ = try await outbox.enqueue(recordKey: "note", payload: bytes("old"), baseVersion: 3, at: .minute(1))
-        let remote = RemoteRecord(recordKey: "note", version: 9, modifiedAt: .minute(99))
+        _ = try? await outbox.enqueue(recordKey: "note", payload: bytes("old"), baseVersion: 3, at: .minute(1))
+        let remote = RemoteRecord(recordKey: "note", version: 9, modifiedAt: .minute(remoteModifiedAtMinute))
         let transport = ReentrantTransport(outcome: .conflict(remote))
         transport.outbox = outbox
         let report = await outbox.drain(via: transport, maxPushes: 5)
-        XCTAssertEqual(report.discardedForRemote, 0)
-        XCTAssertEqual(report.rebasedAfterConflict, 1)
         let pending = await outbox.pending
-        XCTAssertEqual(pending.first?.payload, bytes("newer"))
-        XCTAssertEqual(pending.first?.baseVersion, 9)
+        if expectKept {
+            XCTAssertEqual(report.rebasedAfterConflict, 1, file: file, line: line)
+            XCTAssertEqual(report.discardedForRemote, 0, file: file, line: line)
+            XCTAssertEqual(pending.first?.payload, bytes("newer"), file: file, line: line)
+            XCTAssertEqual(pending.first?.baseVersion, 9, file: file, line: line)
+        } else {
+            XCTAssertEqual(report.discardedForRemote, 1, file: file, line: line)
+            XCTAssertEqual(report.rebasedAfterConflict, 0, file: file, line: line)
+            XCTAssertTrue(pending.isEmpty, file: file, line: line)
+        }
     }
 
     func testTransientFailureOfSupersededContentKeepsTheNewerWrite() async throws {

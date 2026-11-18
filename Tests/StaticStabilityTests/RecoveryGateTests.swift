@@ -98,9 +98,8 @@ final class RecoveryGateTests: XCTestCase {
         gate.dependencyRecovered(at: .minute(100), epoch: 1)
         let slot = Instant.minute(100).advanced(byMillis: jitter.delayMillis(installationID: "device-A", recoveryEpoch: 1))
         XCTAssertEqual(gate.notBefore, slot)
-        if slot > .minute(100) {
-            XCTAssertFalse(gate.mayPush(at: slot.advanced(byMillis: -1)), "not before the slot")
-        }
+        XCTAssertGreaterThan(slot, .minute(100), "device-A's slot is 1,159,791 ms after recovery")
+        XCTAssertFalse(gate.mayPush(at: slot.advanced(byMillis: -1)), "not before the slot")
         XCTAssertTrue(gate.mayPush(at: slot))
         XCTAssertTrue(gate.mayPush(at: slot))
         XCTAssertFalse(gate.mayPush(at: slot), "burst of 2 used up")

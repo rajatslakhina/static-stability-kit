@@ -56,7 +56,7 @@ public enum BreakerState: Sendable, Equatable {
 /// ``CircuitBreaker/record(_:success:at:)`` when the request finishes.
 ///
 /// The permit carries the breaker's epoch, which changes on every trip and every
-/// move to half-open. A result that comes back under an older epoch (for example a
+/// half-open probe admission (including the first). A result that comes back under an older epoch (for example a
 /// request sent before the trip that times out after the cooldown) is ignored, so it
 /// can never be mistaken for the half-open probe's result.
 public struct BreakerPermit: Sendable, Equatable {
@@ -95,7 +95,8 @@ public struct CircuitBreaker: Sendable, Equatable {
     /// Total transitions from not-closed back to closed. The replay uses it as the
     /// recovery epoch so each recovery spreads clients differently.
     public private(set) var recoveries = 0
-    /// Changes on every trip and every move to half-open; see ``BreakerPermit``.
+    /// Changes on every trip and every half-open probe admission (including the
+    /// first); see ``BreakerPermit``.
     public private(set) var epoch: UInt64 = 0
     private var window: OutcomeWindow
     private let jitterSeed: UInt64
